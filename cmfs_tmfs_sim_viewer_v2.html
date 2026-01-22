@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>CMFS + TMFS Toy Simulator v2 (Kaia Testing)</title>
+  <style>
+    :root{
+      --bg:#0b1220; --panel:#111a2e; --panel2:#0f1830;
+      --text:#e8eefc; --muted:#a8b3d6; --border:#2a355a; --accent:#9cc0ff;
+      --ok:#46d17d; --warn:#ffb86b; --bad:#ff6b6b;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:var(--text)}
+    header{padding:14px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;background:rgba(11,18,32,.92);backdrop-filter:blur(6px);z-index:10}
+    header h1{margin:0 0 6px 0;font-size:16px;font-weight:850}
+    header .sub{font-size:12px;color:var(--muted);line-height:1.45;max-width:1200px}
+    main{padding:14px 18px 26px;display:grid;grid-template-columns: 560px 1fr;gap:14px}
+    .card{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px}
+    .card h2{margin:0 0 10px 0;font-size:13px}
+    .grid{display:grid;grid-template-columns: 1fr 1fr;gap:10px}
+    .field{display:flex;flex-direction:column;gap:6px}
+    label{font-size:12px;color:var(--muted)}
+    input, select, button{
+      background:var(--panel2); color:var(--text);
+      border:1px solid var(--border); border-radius:10px;
+      padding:8px 10px; font-size:12px; outline:none;
+    }
+    input:focus, select:focus{border-color:var(--accent)}
+    button{cursor:pointer}
+    button:hover{filter:brightness(1.06)}
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .pill{font-size:12px;border:1px solid var(--border);border-radius:999px;padding:6px 10px;background:var(--panel2);color:var(--muted)}
+    .pill b{color:var(--text)}
+    .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+    .hr{height:1px;background:var(--border);margin:12px 0}
+    .small{font-size:12px;color:var(--muted);line-height:1.45}
+    .viewport{border:1px solid var(--border);border-radius:12px;background:#fff;overflow:auto}
+    canvas{display:block}
+    table{width:100%;border-collapse:collapse;font-size:12px}
+    th,td{padding:6px 8px;border-bottom:1px solid rgba(42,53,90,.55);text-align:left}
+    th{color:var(--muted);font-weight:700}
+    .ok{color:var(--ok)}
+    .warn{color:var(--warn)}
+    .bad{color:var(--bad)}
+    .kbd{border:1px solid var(--border);border-radius:6px;padding:0 6px;background:rgba(255,255,255,.04);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px}
+  </style>
+</head>
+<body>
+<header>
+  <h1>CMFS + TMFS Toy Simulator v2 (Testing epoch=1 day, 1 block=1 sec 가정)</h1>
+  <div class="sub">
+    목적: <b>TMFS(총 다운 시간)</b> + <b>CMFS(연속/재발)</b> 규칙을 빠르게 스윕하고, <b>PASS 샘플도 따로 분리해서</b> 확인하기 위한 단일 HTML 도구입니다.
+    outage 이벤트는 Poisson(λ/day)로 발생하고, 길이는 분포(고정/지수/혼합)로 샘플링합니다. (겹침/연속 이벤트는 interval merge로 하나의 run으로 합쳐집니다.)
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Scoring params (CMFS / TMFS)</h2>
+
+    <div class="grid">
+      <div class="field">
+        <label>Evaluation length (blocks)</label>
+        <input id="evalBlocks" type="number" value="86400" min="60" step="1"/>
+      </div>
+      <div class="field">
+        <label>TMFS threshold (blocks) — PASS if ≤ TH</label>
+        <input id="tmfsTH" type="number" value="432" min="0" step="1"/>
+      </div>
+
+      <div class="field">
+        <label>CMFS threshold — FAIL if ≥ TH</label>
+        <input id="cmfsTH" type="number" value="200" min="0" step="1"/>
+      </div>
+      <div class="field">
+        <label>wLong (k² weight)</label>
+        <input id="wLong" type="number" value="9" min="0" step="1"/>
+      </div>
+
+      <div class="field">
+        <label>T (severity start, L≥T)</label>
+        <input id="T" type="number" value="10" min="1" step="1"/>
+      </div>
+      <div class="field">
+        <label>severity per block (from T)</label>
+        <input id="sevPer" type="number" value="2" min="0" step="0.5"/>
+      </div>
+
+      <div class="field">
+        <label>T_long (k count threshold)</label>
+        <input id="Tlong" type="number" value="30" min="1" step="1"/>
+      </div>
+      <div class="field">
+        <label>rMin (r counts runs with L≥rMin)</label>
+        <input id="rMin" type="number" value="2" min="1" step="1"/>
+      </div>
+
+      <div class="field">
+        <label>rFree (no penalty up to)</label>
+        <input id="rFree" type="number" value="10" min="0" step="1"/>
+      </div>
+      <div class="field">
+        <label>rPenalty (per run after rFree)</label>
+        <input id="rPen" type="number" value="6" min="0" step="1"/>
+        <div class="small">추천(최소 변경): 5→6이면 <span class="mono">9×48</span> 같은 TMFS 경계 패턴을 CMFS가 확실히 걸러냅니다.</div>
+      </div>
+    </div>
+
+    <div class="hr"></div>
+
+    <h2>Outage model</h2>
+    <div class="grid">
+      <div class="field">
+        <label>λ (events/day)</label>
+        <input id="lambda" type="number" value="20" min="0" step="0.1"/>
+      </div>
+      <div class="field">
+        <label>Duration distribution</label>
+        <select id="dist">
+          <option value="fixed">fixed (L=mean)</option>
+          <option value="exp">exponential (mean)</option>
+          <option value="mix_exp" selected>mixture exp (short vs long)</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>mean_out (blocks) [fixed/exp only]</label>
+        <input id="meanOut" type="number" value="9" min="1" step="1"/>
+      </div>
+      <div class="field">
+        <label>mix: p_short (short prob)</label>
+        <input id="pShort" type="number" value="0.95" min="0" max="1" step="0.01"/>
+      </div>
+
+      <div class="field">
+        <label>mix: mean_short (blocks)</label>
+        <input id="meanShort" type="number" value="5" min="1" step="1"/>
+      </div>
+      <div class="field">
+        <label>mix: mean_long (blocks)</label>
+        <input id="meanLong" type="number" value="80" min="1" step="1"/>
+      </div>
+    </div>
+
+    <div class="hr"></div>
+
+    <div class="row">
+      <div class="field" style="flex:1;min-width:220px">
+        <label>Monte Carlo iterations</label>
+        <input id="iters" type="number" value="10000" min="100" max="200000" step="100"/>
+      </div>
+      <div class="field" style="flex:1;min-width:220px">
+        <label>Seed</label>
+        <input id="seed" type="number" value="42" min="0" max="999999"/>
+      </div>
+      <div class="field" style="flex:1;min-width:220px">
+        <label>Histogram subset</label>
+        <select id="histMode">
+          <option value="tm_pass" selected>TMFS pass samples</option>
+          <option value="both_pass">Both pass samples (TMFS & CMFS)</option>
+          <option value="cm_pass">CMFS pass samples</option>
+          <option value="tm_pass_cm_fail">TMFS pass but CMFS fail</option>
+          <option value="all">All samples</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <button id="runBtn">Run</button>
+      <button id="sweepBtn">Sweep rPenalty (5/6/7/8)</button>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <button id="presetA">Preset A: 9×48 boundary (λ=48, fixed L=9)</button>
+      <button id="presetB">Preset B: 5×40 flaps (λ=40, fixed L=5)</button>
+      <button id="presetC">Preset C: 15×15 (λ=15, fixed L=15)</button>
+      <button id="presetD">Preset D: 90×1 (λ=1, fixed L=90)</button>
+      <button id="presetE1">Preset E: mix (λ=20, p_short=0.90, 5/80)</button>
+      <button id="presetE2">Preset E (pass-heavy): mix (λ=20, p_short=0.95, 5/80)</button>
+    </div>
+
+    <div class="small" id="status" style="margin-top:10px"></div>
+
+    <div class="hr"></div>
+
+    <h2>Deterministic quick table (A–D)</h2>
+    <div class="small">아래는 “완전 고정 패턴” A–D를 즉시 계산해 보여줍니다(현재 파라미터 기준).</div>
+    <div class="viewport" style="height:220px;background:#fff;color:#111">
+      <table id="detTable">
+        <thead>
+          <tr>
+            <th>pattern</th>
+            <th>TMFS</th>
+            <th>CMFS</th>
+            <th>details</th>
+            <th>pass?</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="hr"></div>
+
+    <h2>rPenalty sweep table (current outage model)</h2>
+    <div class="small">현재 outage model로 <span class="mono">rPenalty=5/6/7/8</span>을 돌린 결과를 요약합니다(확률값은 Monte Carlo 근사).</div>
+    <div class="viewport" style="height:220px;background:#fff;color:#111">
+      <table id="sweepTable">
+        <thead>
+          <tr>
+            <th>rPenalty</th>
+            <th>P(TMFS pass)</th>
+            <th>P(CMFS pass)</th>
+            <th>P(pass both)</th>
+            <th>P(CMFS pass | TMFS pass)</th>
+            <th>CMFS p50 (TMFS pass)</th>
+            <th>CMFS p95 (TMFS pass)</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="hr"></div>
+
+    <div class="small">
+      메모: 이 도구는 “패턴↔점수” 감각을 위한 toy 모델입니다. 실제 운영 장애는 i.i.d가 아니고 burst/correlation이 생길 수 있습니다.
+      그 경우에도 scoring이 예상대로 동작하는지 확인하려면 <span class="kbd">mix</span>에서 <span class="kbd">p_short</span>을 낮추거나 <span class="kbd">mean_long</span>을 올려 stress test 하세요.
+    </div>
+  </div>
+
+  <div class="card" style="padding:10px">
+    <h2 style="margin-bottom:8px">Results</h2>
+
+    <div class="row" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <span class="pill">P(TMFS pass): <b id="outTmPass">—</b></span>
+      <span class="pill">P(CMFS pass): <b id="outCmPass">—</b></span>
+      <span class="pill">P(pass both): <b id="outBoth">—</b></span>
+      <span class="pill">N(all): <b id="outNAll">—</b></span>
+      <span class="pill">N(TMFS pass): <b id="outNTm">—</b></span>
+      <span class="pill">N(CMFS pass): <b id="outNCm">—</b></span>
+      <span class="pill">N(both pass): <b id="outNBoth">—</b></span>
+      <span class="pill">avg down (blocks): <b id="outAvgDown">—</b></span>
+      <span class="pill">avg r: <b id="outAvgR">—</b></span>
+      <span class="pill">avg k: <b id="outAvgK">—</b></span>
+      <span class="pill">avg maxRun: <b id="outAvgMax">—</b></span>
+    </div>
+
+    <div class="row" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <span class="pill">CMFS p50 (TMFS pass): <b id="outP50">—</b></span>
+      <span class="pill">CMFS p95 (TMFS pass): <b id="outP95">—</b></span>
+      <span class="pill">CMFS p99 (TMFS pass): <b id="outP99">—</b></span>
+      <span class="pill">Histogram subset: <b id="outHistName">—</b></span>
+    </div>
+
+    <div class="viewport" style="height: calc(100vh - 340px);">
+      <canvas id="hist" width="1100" height="520"></canvas>
+    </div>
+
+    <div class="small" style="margin-top:10px">
+      Histogram은 선택한 subset의 <b>CMFS 분포</b>입니다. 빨간 선은 CMFS threshold (FAIL if ≥ TH).
+    </div>
+  </div>
+</main>
+
+<script>
+/*** PRNG (mulberry32) for reproducibility ***/
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function() {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  }
+}
+function randExp(prng, mean){
+  const u = Math.max(1e-12, prng());
+  return -Math.log(u) * mean;
+}
+function randPoisson(prng, lambda){
+  const L = Math.exp(-lambda);
+  let k = 0;
+  let p = 1.0;
+  do {
+    k++;
+    p *= prng();
+  } while (p > L);
+  return k - 1;
+}
+function clamp(x,lo,hi){ return Math.max(lo, Math.min(hi, x)); }
+function $(id){ return document.getElementById(id); }
+function num(id){ return parseFloat($(id).value); }
+function val(id){ return $(id).value; }
+function setStatus(msg){ $("status").innerHTML = msg; }
+function fmtPct(x){ return (x*100).toFixed(2) + "%"; }
+function pct(arr, p){
+  if(arr.length===0) return NaN;
+  const a = arr.slice().sort((x,y)=>x-y);
+  const idx = Math.min(a.length-1, Math.max(0, Math.floor((p/100)*(a.length-1))));
+  return a[idx];
+}
+
+/*** CMFS/TMFS scoring ***/
+function score(runs, params){
+  const {T, sevPer, Tlong, wLong, rMin, rFree, rPen, tmfsTH, cmfsTH} = params;
+  let total=0;
+  let severity=0;
+  let k=0;
+  let r=0;
+  for(const L of runs){
+    total += L;
+    if(L >= T){
+      severity += sevPer * (L - (T-1));
+    }
+    if(L >= Tlong) k++;
+    if(L >= rMin) r++;
+  }
+  const rcp = rPen * Math.max(0, r - rFree);
+  const cmfs = severity + wLong*(k*k) + rcp;
+  const tmfsFail = (total > tmfsTH);      // pass if <=
+  const cmfsFail = (cmfs >= cmfsTH);      // fail if >=
+  return {total, severity, k, r, rcp, cmfs, tmfsFail, cmfsFail, pass: (!tmfsFail && !cmfsFail)};
+}
+
+/*** Merge intervals -> run lengths ***/
+function mergeIntervals(starts, lens, n){
+  if(starts.length===0) return [];
+  const idx = starts.map((s,i)=>({s, e: Math.min(n, s + lens[i])}));
+  idx.sort((a,b)=>a.s-b.s);
+  const merged=[];
+  let curS=idx[0].s, curE=idx[0].e;
+  for(let i=1;i<idx.length;i++){
+    const s=idx[i].s, e=idx[i].e;
+    if(s <= curE){
+      curE = Math.max(curE, e);
+    }else{
+      merged.push([curS,curE]);
+      curS=s; curE=e;
+    }
+  }
+  merged.push([curS,curE]);
+  return merged.map(x=>x[1]-x[0]).filter(L=>L>0);
+}
+
+/*** One-day outage generation ***/
+function genRuns(prng, nBlocks, lambdaDay, dist, meanOut, mix){
+  const M = randPoisson(prng, lambdaDay);
+  if(M<=0) return [];
+  const starts = new Array(M);
+  const lens = new Array(M);
+  for(let i=0;i<M;i++){
+    starts[i] = Math.floor(prng()*nBlocks);
+    if(dist==="fixed"){
+      lens[i] = Math.max(1, Math.round(meanOut));
+    }else if(dist==="exp"){
+      lens[i] = Math.max(1, Math.ceil(randExp(prng, meanOut)));
+    }else{
+      // mix_exp
+      const u = prng();
+      const mean = (u < mix.pShort) ? mix.meanShort : mix.meanLong;
+      lens[i] = Math.max(1, Math.ceil(randExp(prng, mean)));
+    }
+  }
+  return mergeIntervals(starts, lens, nBlocks);
+}
+
+/*** Histogram rendering ***/
+function drawHist(values, threshold, title){
+  const canvas = $("hist");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  // background
+  ctx.fillStyle="#ffffff"; ctx.fillRect(0,0,W,H);
+
+  const padL=60, padR=20, padT=30, padB=45;
+  const plotW=W-padL-padR, plotH=H-padT-padB;
+
+  ctx.fillStyle="#111";
+  ctx.font="13px ui-monospace, Menlo, Consolas, monospace";
+  ctx.fillText(title, padL, 18);
+
+  if(values.length===0){
+    ctx.fillStyle="#111";
+    ctx.font="14px ui-monospace, Menlo, Consolas, monospace";
+    ctx.fillText("No samples in selected subset.", padL, padT+30);
+    return;
+  }
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const xMin = Math.max(0, Math.min(min, threshold) - 10);
+  const xMax = Math.max(threshold*1.15, max + 10);
+
+  const bins=30;
+  const counts=new Array(bins).fill(0);
+  for(const v of values){
+    const t = (v-xMin)/(xMax-xMin);
+    const b = clamp(Math.floor(t*bins), 0, bins-1);
+    counts[b]++;
+  }
+  const maxC = Math.max(...counts);
+
+  // axes
+  ctx.strokeStyle="#111"; ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(padL, padT);
+  ctx.lineTo(padL, padT+plotH);
+  ctx.lineTo(padL+plotW, padT+plotH);
+  ctx.stroke();
+
+  // bars
+  for(let i=0;i<bins;i++){
+    const bx = padL + (i/bins)*plotW;
+    const bw = (plotW/bins)*0.9;
+    const bh = (counts[i]/maxC)*plotH;
+    ctx.fillStyle="#cfd8ff";
+    ctx.fillRect(bx, padT+plotH-bh, bw, bh);
+  }
+
+  // threshold red line
+  const xTH = padL + ((threshold-xMin)/(xMax-xMin))*plotW;
+  ctx.strokeStyle="#c00"; ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(xTH, padT);
+  ctx.lineTo(xTH, padT+plotH);
+  ctx.stroke();
+
+  // labels
+  ctx.fillStyle="#111"; ctx.font="12px ui-monospace, Menlo, Consolas, monospace";
+  ctx.fillText("count", 10, padT+10);
+  ctx.fillText("CMFS", padL + plotW/2 - 20, H-12);
+
+  // x ticks
+  const ticks=5;
+  for(let i=0;i<=ticks;i++){
+    const v = xMin + (i/ticks)*(xMax-xMin);
+    const xt = padL + (i/ticks)*plotW;
+    ctx.fillStyle="#111";
+    ctx.fillRect(xt, padT+plotH, 1, 6);
+    ctx.fillText(v.toFixed(0), xt-12, padT+plotH+20);
+  }
+  ctx.fillStyle="#c00";
+  ctx.fillText(`TH=${threshold.toFixed(0)}`, xTH+6, padT+14);
+}
+
+/*** Deterministic quick table ***/
+function renderDet(params){
+  const tbody = $("detTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  const cases = [
+    {name:"A: 9×48", runs: Array(48).fill(9)},
+    {name:"B: 5×40", runs: Array(40).fill(5)},
+    {name:"C: 15×15", runs: Array(15).fill(15)},
+    {name:"D: 90×1", runs: [90]},
+  ];
+  for(const c of cases){
+    const s = score(c.runs, params);
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${c.name}</td>
+      <td class="mono">${s.total}</td>
+      <td class="mono">${s.cmfs.toFixed(1)}</td>
+      <td class="mono">sev=${s.severity.toFixed(1)}, k=${s.k}, r=${s.r}, rcp=${s.rcp.toFixed(1)}</td>
+      <td>${s.pass ? "PASS" : "<b>FAIL</b>"}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+/*** State: store last run arrays for histogram switching ***/
+let LAST = null;
+
+/*** Run MC once ***/
+function runOnce(params, model, iters, seed){
+  const prng = mulberry32(seed>>>0);
+  let tmPass=0, cmPass=0, both=0;
+  let sumDown=0, sumR=0, sumK=0, sumMax=0;
+  const all=[], tm_pass=[], cm_pass=[], both_pass=[], tm_pass_cm_fail=[];
+  for(let i=0;i<iters;i++){
+    const runs = genRuns(prng, model.evalBlocks, model.lambdaDay, model.dist, model.meanOut, model.mix);
+    const s = score(runs, params);
+    sumDown += s.total;
+    sumR += s.r;
+    sumK += s.k;
+    sumMax += (runs.length ? Math.max(...runs) : 0);
+
+    all.push(s.cmfs);
+    if(!s.tmfsFail){
+      tmPass++;
+      tm_pass.push(s.cmfs);
+      if(s.cmfsFail) tm_pass_cm_fail.push(s.cmfs);
+    }
+    if(!s.cmfsFail){
+      cmPass++;
+      cm_pass.push(s.cmfs);
+    }
+    if(s.pass){
+      both++;
+      both_pass.push(s.cmfs);
+    }
+  }
+  const out = {
+    iters,
+    tmPass, cmPass, both,
+    pTm: tmPass/iters,
+    pCm: cmPass/iters,
+    pBoth: both/iters,
+    pCmGivenTm: (tmPass>0) ? (both/tmPass) : NaN, // note: both==TMFS pass & CMFS pass
+    avgDown: sumDown/iters,
+    avgR: sumR/iters,
+    avgK: sumK/iters,
+    avgMax: sumMax/iters,
+    dist: {all, tm_pass, cm_pass, both_pass, tm_pass_cm_fail}
+  };
+  return out;
+}
+
+function subsetName(mode){
+  if(mode==="tm_pass") return "TMFS pass samples";
+  if(mode==="both_pass") return "Both pass samples";
+  if(mode==="cm_pass") return "CMFS pass samples";
+  if(mode==="tm_pass_cm_fail") return "TMFS pass but CMFS fail";
+  return "All samples";
+}
+
+function subsetArr(mode){
+  if(!LAST) return [];
+  const d = LAST.dist;
+  if(mode==="tm_pass") return d.tm_pass;
+  if(mode==="both_pass") return d.both_pass;
+  if(mode==="cm_pass") return d.cm_pass;
+  if(mode==="tm_pass_cm_fail") return d.tm_pass_cm_fail;
+  return d.all;
+}
+
+/*** Run MC + render ***/
+function run(){
+  const params = {
+    evalBlocks: Math.round(num("evalBlocks")),
+    tmfsTH: Math.round(num("tmfsTH")),
+    cmfsTH: Math.round(num("cmfsTH")),
+    wLong: num("wLong"),
+    T: Math.round(num("T")),
+    sevPer: num("sevPer"),
+    Tlong: Math.round(num("Tlong")),
+    rMin: Math.round(num("rMin")),
+    rFree: Math.round(num("rFree")),
+    rPen: num("rPen"),
+  };
+  const model = {
+    evalBlocks: params.evalBlocks,
+    lambdaDay: num("lambda"),
+    dist: val("dist"),
+    meanOut: Math.round(num("meanOut")),
+    mix: {
+      pShort: clamp(num("pShort"), 0, 1),
+      meanShort: Math.max(1, Math.round(num("meanShort"))),
+      meanLong: Math.max(1, Math.round(num("meanLong"))),
+    }
+  };
+  const iters = Math.round(num("iters"));
+  const seed = Math.round(num("seed"));
+
+  setStatus("Running…");
+  const t0 = performance.now();
+
+  LAST = runOnce(params, model, iters, seed);
+
+  // headline probs
+  $("outTmPass").textContent = fmtPct(LAST.pTm);
+  $("outCmPass").textContent = fmtPct(LAST.pCm);
+  $("outBoth").textContent = fmtPct(LAST.pBoth);
+
+  $("outNAll").textContent = String(iters);
+  $("outNTm").textContent = String(LAST.tmPass);
+  $("outNCm").textContent = String(LAST.cmPass);
+  $("outNBoth").textContent = String(LAST.both);
+
+  $("outAvgDown").textContent = LAST.avgDown.toFixed(1);
+  $("outAvgR").textContent = LAST.avgR.toFixed(2);
+  $("outAvgK").textContent = LAST.avgK.toFixed(2);
+  $("outAvgMax").textContent = LAST.avgMax.toFixed(1);
+
+  // percentiles for TMFS pass subset (consistent with earlier)
+  const tmArr = LAST.dist.tm_pass;
+  $("outP50").textContent = isFinite(pct(tmArr,50)) ? pct(tmArr,50).toFixed(1) : "—";
+  $("outP95").textContent = isFinite(pct(tmArr,95)) ? pct(tmArr,95).toFixed(1) : "—";
+  $("outP99").textContent = isFinite(pct(tmArr,99)) ? pct(tmArr,99).toFixed(1) : "—";
+
+  // histogram render based on mode
+  const mode = val("histMode");
+  $("outHistName").textContent = subsetName(mode);
+  drawHist(subsetArr(mode), params.cmfsTH, `CMFS histogram — ${subsetName(mode)} (iters=${iters})`);
+
+  renderDet(params);
+
+  const t1 = performance.now();
+  setStatus(`Done. iters=${iters}, seed=${seed}. (${(t1-t0).toFixed(0)}ms)`);
+}
+
+/*** Sweep rPenalty (5/6/7/8) for current outage model ***/
+function sweep(){
+  const baseParams = {
+    evalBlocks: Math.round(num("evalBlocks")),
+    tmfsTH: Math.round(num("tmfsTH")),
+    cmfsTH: Math.round(num("cmfsTH")),
+    wLong: num("wLong"),
+    T: Math.round(num("T")),
+    sevPer: num("sevPer"),
+    Tlong: Math.round(num("Tlong")),
+    rMin: Math.round(num("rMin")),
+    rFree: Math.round(num("rFree")),
+    rPen: num("rPen"),
+  };
+  const model = {
+    evalBlocks: baseParams.evalBlocks,
+    lambdaDay: num("lambda"),
+    dist: val("dist"),
+    meanOut: Math.round(num("meanOut")),
+    mix: {
+      pShort: clamp(num("pShort"), 0, 1),
+      meanShort: Math.max(1, Math.round(num("meanShort"))),
+      meanLong: Math.max(1, Math.round(num("meanLong"))),
+    }
+  };
+  const iters = Math.round(num("iters"));
+  const seed = Math.round(num("seed"));
+
+  const tbody = $("sweepTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  setStatus("Sweeping rPenalty…");
+
+  const rps = [5,6,7,8];
+  const t0 = performance.now();
+
+  // run sequentially (fast enough for 10k iters * 4 in modern browsers)
+  for(const rp of rps){
+    const params = {...baseParams, rPen: rp};
+    const out = runOnce(params, model, iters, seed + rp*1000);
+
+    const pCmGivenTm = (out.tmPass>0) ? (out.both/out.tmPass) : 0;
+
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td class="mono">${rp}</td>
+      <td class="mono">${fmtPct(out.pTm)}</td>
+      <td class="mono">${fmtPct(out.pCm)}</td>
+      <td class="mono">${fmtPct(out.pBoth)}</td>
+      <td class="mono">${fmtPct(pCmGivenTm)}</td>
+      <td class="mono">${isFinite(pct(out.dist.tm_pass,50)) ? pct(out.dist.tm_pass,50).toFixed(0) : "—"}</td>
+      <td class="mono">${isFinite(pct(out.dist.tm_pass,95)) ? pct(out.dist.tm_pass,95).toFixed(0) : "—"}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+
+  const t1 = performance.now();
+  setStatus(`Sweep done. (iters=${iters} each, ${(t1-t0).toFixed(0)}ms)`);
+}
+
+/*** Presets ***/
+function setPresetA(){ $("lambda").value="48"; $("dist").value="fixed"; $("meanOut").value="9"; run(); }
+function setPresetB(){ $("lambda").value="40"; $("dist").value="fixed"; $("meanOut").value="5"; run(); }
+function setPresetC(){ $("lambda").value="15"; $("dist").value="fixed"; $("meanOut").value="15"; run(); }
+function setPresetD(){ $("lambda").value="1";  $("dist").value="fixed"; $("meanOut").value="90"; run(); }
+function setPresetE1(){ $("lambda").value="20"; $("dist").value="mix_exp"; $("pShort").value="0.90"; $("meanShort").value="5"; $("meanLong").value="80"; run(); }
+function setPresetE2(){ $("lambda").value="20"; $("dist").value="mix_exp"; $("pShort").value="0.95"; $("meanShort").value="5"; $("meanLong").value="80"; run(); }
+
+$("runBtn").addEventListener("click", run);
+$("sweepBtn").addEventListener("click", sweep);
+
+$("presetA").addEventListener("click", setPresetA);
+$("presetB").addEventListener("click", setPresetB);
+$("presetC").addEventListener("click", setPresetC);
+$("presetD").addEventListener("click", setPresetD);
+$("presetE1").addEventListener("click", setPresetE1);
+$("presetE2").addEventListener("click", setPresetE2);
+
+$("histMode").addEventListener("change", ()=>{
+  if(!LAST) return;
+  const th = Math.round(num("cmfsTH"));
+  const mode = val("histMode");
+  $("outHistName").textContent = subsetName(mode);
+  drawHist(subsetArr(mode), th, `CMFS histogram — ${subsetName(mode)} (iters=${LAST.iters})`);
+});
+
+// auto-run once
+run();
+</script>
+</body>
+</html>
