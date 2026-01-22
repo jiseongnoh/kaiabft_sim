@@ -1,0 +1,1514 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Kaia IBFT 성능 시뮬레이터 (통합)</title>
+  <style>
+    :root{
+      --bg:#0b1220; --panel:#111a2e; --panel2:#0f1830;
+      --text:#e8eefc; --muted:#a8b3d6; --border:#2a355a; --accent:#9cc0ff;
+      --good:#46d17d; --warn:#ffb86b; --bad:#ff6b6b;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:var(--text)}
+    header{padding:14px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;background:rgba(11,18,32,.92);backdrop-filter:blur(6px);z-index:10}
+    header h1{margin:0 0 6px 0;font-size:16px;font-weight:850}
+    header .sub{font-size:12px;color:var(--muted);line-height:1.5;max-width:1200px}
+    main{padding:14px 18px 26px;display:grid;grid-template-columns: 520px 1fr;gap:14px}
+    .card{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px}
+    .card h2{margin:0 0 10px 0;font-size:13px}
+    .grid{display:grid;grid-template-columns: 1fr 1fr;gap:10px}
+    .grid3{display:grid;grid-template-columns: 1fr 1fr 1fr;gap:10px}
+    .field{display:flex;flex-direction:column;gap:6px}
+    label{font-size:12px;color:var(--muted)}
+    input, select, button, textarea{
+      background:var(--panel2); color:var(--text);
+      border:1px solid var(--border); border-radius:10px;
+      padding:8px 10px; font-size:12px; outline:none;
+    }
+    input:focus, select:focus, textarea:focus{border-color:var(--accent)}
+    button{cursor:pointer}
+    button:hover{filter:brightness(1.06)}
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .pill{font-size:12px;border:1px solid var(--border);border-radius:999px;padding:6px 10px;background:var(--panel2);color:var(--muted)}
+    .pill b{color:var(--text)}
+    .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+    .hr{height:1px;background:var(--border);margin:12px 0}
+    .small{font-size:12px;color:var(--muted);line-height:1.45}
+    .muted{color:var(--muted)}
+    .viewport{border:1px solid var(--border);border-radius:12px;background:#fff;overflow:auto;height: calc(100vh - 210px);}
+    .svgwrap{transform-origin:0 0; display:inline-block}
+    .kpiGrid{display:grid;grid-template-columns: 1fr 1fr;gap:10px;margin-top:10px}
+    .kpiBox{border:1px solid var(--border);border-radius:12px;background:var(--panel2);padding:10px}
+    .kpiBox .k{font-size:12px;color:var(--muted);margin-bottom:6px}
+    .kpiBox .v{font-size:18px;font-weight:900}
+    .kpiBox .v.good{color:var(--good)}
+    .kpiBox .v.warn{color:var(--warn)}
+    .kpiBox .v.bad{color:var(--bad)}
+    .checkrow{display:flex;gap:8px;align-items:center;margin-top:2px}
+    .checkrow input{width:auto}
+    .twocol{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    table{width:100%;border-collapse:collapse;font-size:12px}
+    th,td{border-bottom:1px solid rgba(42,53,90,.7);padding:6px 8px;text-align:left}
+    th{color:var(--muted);font-weight:700}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--border);background:rgba(255,255,255,.04);font-size:11px;color:var(--muted)}
+    .dangerBox{border:1px solid rgba(185,28,28,.6);background:rgba(185,28,28,.12);border-radius:12px;padding:10px}
+    .dangerBox b{color:#ffb3b3}
+    .tabs{display:flex;gap:8px;margin:0 0 10px 0;flex-wrap:wrap}
+    .tab{padding:7px 10px;border-radius:10px;border:1px solid var(--border);background:var(--panel2);cursor:pointer;font-size:12px;color:var(--muted)}
+    .tab.active{background:var(--accent);color:#0b1220;border-color:var(--accent);font-weight:900}
+    .btn2{border:1px solid var(--border);background:var(--panel2);color:var(--text);padding:7px 10px;border-radius:10px;cursor:pointer;font-size:12px}
+    .btn2:hover{filter:brightness(1.05)}
+  </style>
+</head>
+<body>
+<header>
+  <h1>Kaia IBFT 성능 시뮬레이터 (통합 뷰어)</h1>
+  <div class="sub">
+    기본값: <span class="mono">exec=450ms</span>(insert 포함), <span class="mono">N=50</span>, <span class="mono">quorum=17</span>, commit은 execution 직후 가능(=commit vote는 exec 완료 후).
+    <br/>
+    이 파일은 두 뷰어를 하나로 합친 것입니다: <b>(1) Monte Carlo 시뮬레이터</b> + <b>(2) 빠른 근사 타임라인(cw 모델)</b>.
+    탭에서 전환하며 동일한 PP 경량화/네트워크/스케일링 가정에 대해 비교할 수 있습니다.
+  </div>
+</header>
+
+<main>
+  <!-- LEFT: shared controls -->
+  <div class="card">
+    <h2>Presets</h2>
+    <div class="row">
+      <button id="preset_base" title="N=50/Q=17, tx=10k, exec=450ms">Baseline</button>
+      <button id="preset_bw1">1Gbps</button>
+      <button id="preset_bw5">5Gbps</button>
+      <button id="preset_bw10">10Gbps</button>
+      <button id="preset_fullbody">PP: fullbody(2MB)</button>
+      <button id="preset_txhash">PP: txhashes</button>
+      <button id="preset_2x" title="tx=20k로 올리고 pre-exec reuse로 버티는지 확인">2x TPS(tx=20k)</button>
+      <button id="resetHard">Reset</button>
+    </div>
+
+    <div class="hr"></div>
+
+    <h2>Consensus / set</h2>
+    <div class="grid">
+      <div class="field">
+        <label>Validator set size N</label>
+        <input id="N" type="number" value="50" min="4" max="200" />
+      </div>
+      <div class="field">
+        <label>Quorum Q (prepare/commit)</label>
+        <input id="Q" type="number" value="17" min="1" max="200" />
+      </div>
+    </div>
+    <div class="small" id="bftNote"></div>
+
+    <div class="grid" style="margin-top:10px">
+      <div class="field">
+        <label>Prepare gating</label>
+        <select id="prepareGate">
+          <option value="after_pp" selected>after PP ready (fast)</option>
+          <option value="after_exec">after execution (safer / slower)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Commit gating</label>
+        <select id="commitGate">
+          <option value="after_exec" selected>after execution (your setting)</option>
+          <option value="unsafe">unsafe: ignore execution (ordering-finality)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="hr"></div>
+
+    <h2>Block / execution model</h2>
+    <div class="grid">
+      <div class="field">
+        <label>Block time (ms)</label>
+        <input id="blockTime" type="number" value="1000" min="200" max="5000" />
+      </div>
+      <div class="field">
+        <label>Rounds to draw</label>
+        <input id="rounds" type="number" value="5" min="1" max="20" />
+      </div>
+
+      <div class="field">
+        <label>Tx count / block</label>
+        <input id="txCount" type="number" value="10000" min="1" max="200000" />
+      </div>
+      <div class="field">
+        <label>Tx reference (for scaling)</label>
+        <input id="txRef" type="number" value="10000" min="1" max="200000" />
+      </div>
+
+      <div class="field">
+        <label>Exec(ref) ms @ txRef (includes insert by default)</label>
+        <input id="execRefMs" type="number" value="450" min="0" max="4000" />
+      </div>
+      <div class="field">
+        <label>Insert extra (ms) (0 = included)</label>
+        <input id="insertExtraMs" type="number" value="0" min="0" max="4000" />
+      </div>
+
+      <div class="field">
+        <label>Scaling exponent α (E ∝ (tx/txRef)^α)</label>
+        <input id="alpha" type="number" value="1.0" min="0" max="3" step="0.05" />
+      </div>
+      <div class="field">
+        <label>Pre-exec reuse (%) (speculative)</label>
+        <input id="reusePct" type="number" value="0" min="0" max="90" />
+      </div>
+
+      <div class="field">
+        <label>Verify / finalize overhead (ms)</label>
+        <input id="verifyMs" type="number" value="5" min="0" max="500" />
+      </div>
+      <div class="field">
+        <label>Zoom</label>
+        <select id="zoom">
+          <option value="0.75">75%</option>
+          <option value="1" selected>100%</option>
+          <option value="1.25">125%</option>
+          <option value="1.5">150%</option>
+          <option value="2">200%</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <span class="pill">exec_total: <b><span id="execTotalOut" class="mono"></span> ms</b></span>
+      <span class="pill">exec_post(receipt): <b><span id="execPostOut" class="mono"></span> ms</b></span>
+    </div>
+
+    <div class="hr"></div>
+
+    <h2>Preprepare payload</h2>
+    <div class="grid">
+      <div class="field">
+        <label>PP type</label>
+        <select id="ppType">
+          <option value="fullbody">fullbody (2MB push)</option>
+          <option value="txhashes" selected>txhashes (inventory)</option>
+          <option value="shortids">shortids (compact)</option>
+          <option value="headeronly">header only</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Full body size (MB) (only for fullbody)</label>
+        <input id="bodyMB" type="number" value="2" min="0.01" max="50" step="0.01" />
+      </div>
+
+      <div class="field">
+        <label>Mempool hit-rate (%) (for non-fullbody)</label>
+        <input id="hitRate" type="number" value="98" min="0" max="100" />
+      </div>
+      <div class="field">
+        <label>Miss penalty (ms) if tx body missing</label>
+        <input id="missPenalty" type="number" value="80" min="0" max="2000" />
+      </div>
+
+      <div class="field">
+        <label>Streaming exec start (fullbody only)</label>
+        <select id="streamStart">
+          <option value="on" selected>start on first-byte arrival</option>
+          <option value="off">start after full body arrival</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Prepare on header (fullbody only)</label>
+        <select id="prepareOnHeader">
+          <option value="on" selected>allow prepare on header</option>
+          <option value="off">require full body before prepare</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <span class="pill">PP size: <b><span id="ppKBOut" class="mono"></span> KB</b></span>
+      <span class="pill">PP send(one peer): <b><span id="ppSendOut" class="mono"></span> ms</b></span>
+    </div>
+
+    <div class="hr"></div>
+
+    <h2>Network (Seoul/Tokyo/Singapore)</h2>
+    <div class="grid">
+      <div class="field">
+        <label>Latency preset</label>
+        <select id="latPreset">
+          <option value="cloudping_p50" selected>AWS region RTT P50 (CloudPing.co)</option>
+          <option value="custom">Custom RTT</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Bandwidth preset</label>
+        <select id="bandwidthPreset">
+          <option value="1">1 Gbps</option>
+          <option value="5">5 Gbps</option>
+          <option value="10">10 Gbps</option>
+          <option value="custom" selected>Custom</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Bandwidth (Gbps) (custom)</label>
+        <input id="bandwidthGbps" type="number" value="1" min="0.1" max="1000" step="0.1" />
+      </div>
+      <div class="field">
+        <label>PP send concurrency (connections)</label>
+        <input id="sendConc" type="number" value="1" min="1" max="16" />
+      </div>
+
+      <div class="field">
+        <label>Dissemination mode</label>
+        <select id="dissMode">
+          <option value="direct" selected>direct push (proposer→all)</option>
+          <option value="tree">tree (fanout k)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Tree fanout k (only for tree)</label>
+        <input id="fanoutK" type="number" value="8" min="1" max="32" />
+      </div>
+    </div>
+
+    <div class="grid3" style="margin-top:10px">
+      <div class="field">
+        <label>RTT SEO↔TYO (ms)</label>
+        <input id="rttST" type="number" value="34.89" min="0" max="500" step="0.01" />
+      </div>
+      <div class="field">
+        <label>RTT SEO↔SIN (ms)</label>
+        <input id="rttSS" type="number" value="69.33" min="0" max="1000" step="0.01" />
+      </div>
+      <div class="field">
+        <label>RTT TYO↔SIN (ms)</label>
+        <input id="rttTS" type="number" value="69.93" min="0" max="1000" step="0.01" />
+      </div>
+    </div>
+
+    <div class="grid" style="margin-top:10px">
+      <div class="field">
+        <label>Node distribution (SEO / TYO / SIN)</label>
+        <div class="row">
+          <input id="nSEO" type="number" value="17" min="0" max="200" style="width:90px" />
+          <input id="nTYO" type="number" value="16" min="0" max="200" style="width:90px" />
+          <input id="nSIN" type="number" value="17" min="0" max="200" style="width:90px" />
+        </div>
+        <div class="small muted">합이 N이 아니면 자동으로 마지막 항목을 보정합니다.</div>
+      </div>
+      <div class="field">
+        <label>Proposer city</label>
+        <select id="propCity">
+          <option value="SEO" selected>SEO</option>
+          <option value="TYO">TYO</option>
+          <option value="SIN">SIN</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="grid" style="margin-top:10px">
+      <div class="field">
+        <label>Queue / scheduling (ms)</label>
+        <input id="queueMs" type="number" value="2" min="0" max="200" />
+      </div>
+      <div class="field">
+        <label>Jitter std (ms)</label>
+        <input id="jitterStd" type="number" value="1.5" min="0" max="50" step="0.1" />
+      </div>
+
+      <div class="field">
+        <label>Msg processing (ms)</label>
+        <input id="msgProc" type="number" value="1.0" min="0" max="50" step="0.1" />
+      </div>
+      <div class="field">
+        <label>Prepare/Commit local overhead (ms)</label>
+        <input id="pcOver" type="number" value="2.0" min="0" max="50" step="0.1" />
+      </div>
+
+      <div class="field">
+        <label>PP serialization (ms)</label>
+        <input id="ppSer" type="number" value="1.0" min="0" max="200" step="0.1" />
+      </div>
+      <div class="field">
+        <label>Simulation iterations</label>
+        <input id="iters" type="number" value="400" min="50" max="10000" />
+      </div>
+    </div>
+
+    <div class="hr"></div>
+
+    <h2>Quick Timeline (cw 모델) 입력</h2>
+    <div class="grid">
+      <div class="field">
+        <label>One-way latency Δ (ms)</label>
+        <input id="cw_delta" type="number" value="30" min="0" max="500" />
+      </div>
+      <div class="field">
+        <label>Queue / scheduling overhead (ms)</label>
+        <input id="cw_queue" type="number" value="5" min="0" max="500" />
+      </div>
+
+      <div class="field">
+        <label>Processing overhead σ (ms)</label>
+        <input id="cw_sigma" type="number" value="40" min="0" max="2000" />
+      </div>
+      <div class="field">
+        <label>cw model: cw ≈ a·Δ + σ</label>
+        <select id="cw_model">
+          <option value="ibft" selected>IBFT conservative (a=8)</option>
+          <option value="ibft_fast">IBFT aggressive/QoS (a=6)</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>PP outbound bandwidth (Mbps) (cw timeline용)</label>
+        <input id="cw_ppMbps" type="number" value="160" min="1" max="100000" />
+      </div>
+      <div class="field">
+        <label>Propagation mode (cw timeline용)</label>
+        <select id="cw_mode">
+          <option value="fullmesh" selected>Full-mesh push (tail worst)</option>
+          <option value="fanout8">Tree fanout k=8</option>
+          <option value="compact">Compact/header-first</option>
+        </select>
+      </div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button class="btn2" id="syncCwFromGeo" title="Geo RTT에서 보수적으로 Δ를 추정하여 cw 입력을 갱신">Sync Δ from RTT (heuristic)</button>
+      <span class="pill">cw: <b><span id="cwOut" class="mono"></span> ms</b></span>
+      <span class="pill">rx-start p95: <b><span id="cw_rx95" class="mono"></span> ms</b></span>
+    </div>
+
+    <div class="hr"></div>
+
+    <div class="row">
+      <div class="checkrow">
+        <input id="autoRun" type="checkbox" checked />
+        <label for="autoRun">Auto-run on change</label>
+      </div>
+      <span class="pill">Seed: <input id="seed" type="number" value="42" min="0" max="999999" style="width:120px;margin-left:8px" /></span>
+      <button id="run">Run now</button>
+      <span id="status" class="small"></span>
+    </div>
+
+    <div class="hr"></div>
+    <div class="dangerBox">
+      <b>해석 주의(중요)</b><br/>
+      <span class="small">
+        표준 IBFT(BFT) 의미에서 <span class="mono">Q</span>는 통상 <span class="mono">2f+1</span>이며, 안전을 위해 <span class="mono">N ≤ 3f+1</span>이 필요합니다.
+        본 도구는 <span class="mono">Q</span>를 “수집해야 하는 표/서명 개수”로 취급합니다. 즉, <span class="mono">Q=17</span>은 성능적으로는 유리하지만,
+        표준 BFT 안전성과의 정합성은 별도 검증이 필요합니다.
+      </span>
+    </div>
+  </div>
+
+  <!-- RIGHT: tabbed panels -->
+  <div class="card" style="padding:10px">
+    <div class="tabs">
+      <div class="tab active" id="tabSummary" onclick="showTab('summary')">Summary</div>
+      <div class="tab" id="tabDist" onclick="showTab('dist')">Distribution</div>
+      <div class="tab" id="tabTimeline" onclick="showTab('timeline')">Timeline (p95)</div>
+      <div class="tab" id="tabSweep" onclick="showTab('sweep')">Sweep</div>
+      <div class="tab" id="tabCw" onclick="showTab('cw')">Quick cw Timeline</div>
+    </div>
+
+    <div id="panelSummary">
+      <div class="kpiGrid">
+        <div class="kpiBox">
+          <div class="k">commit time p95 (ms)</div>
+          <div class="v" id="kpiCommit95">—</div>
+          <div class="small muted">조건: commit_p95 ≤ blockTime 이면 1초 유지 가능성이 높아짐</div>
+        </div>
+        <div class="kpiBox">
+          <div class="k">success(commit ≤ blockTime)</div>
+          <div class="v" id="kpiSucc">—</div>
+          <div class="small muted">Monte Carlo 기반 비율(모형 가정 내)</div>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:10px">
+        <span class="pill">commit p50: <b><span id="outCommit50" class="mono"></span> ms</b></span>
+        <span class="pill">commit p95: <b><span id="outCommit95" class="mono"></span> ms</b></span>
+        <span class="pill">commit p99: <b><span id="outCommit99" class="mono"></span> ms</b></span>
+        <span class="pill">slack(p95): <b><span id="outSlack" class="mono"></span> ms</b></span>
+      </div>
+
+      <div class="twocol" style="margin-top:10px">
+        <div class="card" style="background:transparent;padding:0;border:none">
+          <h2>Percentiles (quorum-critical)</h2>
+          <table>
+            <thead>
+              <tr><th>Metric</th><th>p50</th><th>p95</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>PP-ready @ Qth node</td><td class="mono" id="outPPQ50">—</td><td class="mono" id="outPPQ95">—</td></tr>
+              <tr><td>Exec-end @ Qth node</td><td class="mono" id="outEXQ50">—</td><td class="mono" id="outEXQ95">—</td></tr>
+              <tr><td>Commit-ready @ proposer</td><td class="mono" id="outCR50">—</td><td class="mono" id="outCR95">—</td></tr>
+            </tbody>
+          </table>
+          <div class="small muted" style="margin-top:6px">
+            Qth node = “Q번째로 빠른 노드” 관점(정확히는 Q개의 표를 모을 수 있는 최소 시점 근사).
+          </div>
+        </div>
+
+        <div class="card" style="background:transparent;padding:0;border:none">
+          <h2>Quick notes</h2>
+          <div class="small muted" id="quickNotes">—</div>
+          <div class="hr"></div>
+          <div class="small muted">
+            <b>권장 체크</b>: (1) PP를 fullbody로 두고 1Gbps에서 commit_p95가 1초 밖으로 밀리는지,
+            (2) txhashes/shortids + hitRate 98~99%에서 slack이 확보되는지,
+            (3) tx=20k에서 reusePct(사전실행 재사용률)가 얼마나 필요해지는지.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="panelDist" style="display:none">
+      <h2 style="margin-bottom:8px">Histogram (commit times)</h2>
+      <div id="histWrap" class="viewport" style="height:240px"></div>
+      <div class="small muted" style="margin-top:10px">
+        히스토그램은 proposer commit time 분포입니다. 붉은 점선=blockTime.
+      </div>
+    </div>
+
+    <div id="panelTimeline" style="display:none">
+      <h2 style="margin-bottom:8px">Timeline (p95 기반 근사)</h2>
+      <div class="viewport">
+        <div id="svgWrap" class="svgwrap"></div>
+      </div>
+      <div class="small muted" style="margin-top:10px">
+        타임라인은 시뮬레이션 결과의 p95를 이용해 “주요 단계”를 순차로 그린 근사입니다. 실제 시스템에서는 PP 전파/검증/prepare/commit이 부분적으로 겹칩니다.
+      </div>
+    </div>
+
+    <div id="panelSweep" style="display:none">
+      <h2 style="margin-bottom:8px">Sweep (bw × PP type)</h2>
+      <div class="row" style="margin-bottom:10px">
+        <button class="btn2" id="runSweep">Run sweep (bw=1/5/10, pp=4종)</button>
+        <span class="small muted">현재 입력값 기준으로 스윕합니다(반복수는 iters의 1/2로 자동 설정).</span>
+      </div>
+      <div class="viewport" style="height: calc(100vh - 280px);">
+        <div style="padding:10px;background:#fff;color:#111">
+          <table id="sweepTable">
+            <thead>
+              <tr>
+                <th>Bandwidth</th>
+                <th>PP type</th>
+                <th>commit p50</th>
+                <th>commit p95</th>
+                <th>success ≤ 1s</th>
+                <th>notes</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="panelCw" style="display:none">
+      <h2 style="margin-bottom:8px">Quick cw Timeline (분해 가능한 근사)</h2>
+      <div class="small muted" style="margin-bottom:10px">
+        이 탭은 “cw ≈ a·Δ + σ” 근사를 쓰는 빠른 모델입니다. Monte Carlo(geo 매트릭스)와 숫자가 다를 수 있으며, 경향성(대역폭/PP경량화/전파 tail)을 빠르게 보기 위한 용도입니다.
+      </div>
+      <div class="viewport">
+        <div id="cwSvgWrap" class="svgwrap"></div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+/* ================= Tabs ================= */
+function showTab(which){
+  const panels = ["summary","dist","timeline","sweep","cw"];
+  for(const p of panels){
+    document.getElementById("panel"+p.charAt(0).toUpperCase()+p.slice(1)).style.display = (p===which) ? "block" : "none";
+    document.getElementById("tab"+p.charAt(0).toUpperCase()+p.slice(1)).classList.toggle("active", p===which);
+  }
+}
+
+/* ========= small utilities ========= */
+function clamp(n, lo, hi){ return Math.max(lo, Math.min(hi, n)); }
+function byId(id){ return document.getElementById(id); }
+function num(id){ return parseFloat(byId(id).value); }
+function val(id){ return byId(id).value; }
+function fmt(x, d=1){ return (isFinite(x) ? x.toFixed(d) : "—"); }
+function pct(arr, p){
+  if(arr.length===0) return NaN;
+  const a = arr.slice().sort((x,y)=>x-y);
+  const idx = Math.min(a.length-1, Math.max(0, Math.floor((p/100)*(a.length-1))));
+  return a[idx];
+}
+
+/* ========= PRNG ========= */
+function mulberry32(seed){
+  let t = seed >>> 0;
+  return function(){
+    t += 0x6D2B79F5;
+    let r = Math.imul(t ^ (t >>> 15), 1 | t);
+    r ^= r + Math.imul(r ^ (r >>> 7), 61 | r);
+    return ((r ^ (r >>> 14)) >>> 0) / 4294967296;
+  }
+}
+function randn(rng){
+  let u=0, v=0;
+  while(u===0) u = rng();
+  while(v===0) v = rng();
+  return Math.sqrt(-2.0*Math.log(u))*Math.cos(2.0*Math.PI*v);
+}
+
+/* ========= Heap for tree dissemination ========= */
+class MinHeap{
+  constructor(){ this.a=[]; }
+  size(){ return this.a.length; }
+  peek(){ return this.a[0]; }
+  push(x){
+    const a=this.a;
+    a.push(x);
+    let i=a.length-1;
+    while(i>0){
+      const p=(i-1)>>1;
+      if(a[p].t<=a[i].t) break;
+      [a[p],a[i]]=[a[i],a[p]];
+      i=p;
+    }
+  }
+  pop(){
+    const a=this.a;
+    if(a.length===0) return null;
+    const top=a[0];
+    const last=a.pop();
+    if(a.length>0){
+      a[0]=last;
+      let i=0;
+      while(true){
+        let l=i*2+1, r=l+1, s=i;
+        if(l<a.length && a[l].t<a[s].t) s=l;
+        if(r<a.length && a[r].t<a[s].t) s=r;
+        if(s===i) break;
+        [a[i],a[s]]=[a[s],a[i]];
+        i=s;
+      }
+    }
+    return top;
+  }
+}
+
+/* ========= Model: PP bytes ========= */
+function ppBytes(ppType, txCount, bodyMB){
+  const header = 1500;
+  if(ppType==="headeronly") return header;
+  if(ppType==="txhashes") return header + Math.ceil(txCount * 32 * 1.2);
+  if(ppType==="shortids") return header + Math.ceil(txCount * 6 * 1.3);
+  return Math.ceil(bodyMB * 1024 * 1024);
+}
+
+/* ========= Topology ========= */
+function makeCityMatrix(rttST, rttSS, rttTS){
+  const rtt = [
+    [0, rttST, rttSS],
+    [rttST, 0, rttTS],
+    [rttSS, rttTS, 0],
+  ];
+  for(let i=0;i<3;i++) rtt[i][i]=1.5;
+  return rtt;
+}
+function cityIndex(name){
+  if(name==="SEO") return 0;
+  if(name==="TYO") return 1;
+  return 2;
+}
+function buildNodeCities(N, nSEO, nTYO, nSIN, proposerCity){
+  let s = nSEO + nTYO + nSIN;
+  if(s !== N){
+    nSIN = Math.max(0, N - nSEO - nTYO);
+    byId("nSIN").value = String(nSIN);
+  }
+  const cities=[];
+  for(let i=0;i<nSEO;i++) cities.push("SEO");
+  for(let i=0;i<nTYO;i++) cities.push("TYO");
+  for(let i=0;i<nSIN;i++) cities.push("SIN");
+  const pCity = proposerCity;
+  if(cities.length===0) cities.push(pCity);
+  if(cities[0]!==pCity){
+    const j = cities.indexOf(pCity);
+    if(j>=0){ const tmp=cities[0]; cities[0]=cities[j]; cities[j]=tmp; }
+  }
+  return cities.slice(0,N);
+}
+function baseDelayMatrix(nodes, rttMatrix, queueMs){
+  const N = nodes.length;
+  const base = Array.from({length:N}, ()=>Array(N).fill(0));
+  for(let i=0;i<N;i++){
+    const ci=cityIndex(nodes[i]);
+    for(let j=0;j<N;j++){
+      if(i===j){ base[i][j]=0; continue; }
+      const cj=cityIndex(nodes[j]);
+      const oneWay = rttMatrix[ci][cj]/2.0;
+      base[i][j] = oneWay + queueMs;
+    }
+  }
+  return base;
+}
+
+/* ========= Dissemination: direct vs tree ========= */
+function simulatePPDissemination(nodes, baseDelay, rng, haveTime, sendDur, ppSer, jitterStd, sendConc, dissMode, fanoutK){
+  const N = nodes.length;
+  const proposer = 0;
+
+  const first = Array(N).fill(Infinity);
+  const full  = Array(N).fill(Infinity);
+  first[proposer]=haveTime;
+  full[proposer]=haveTime;
+
+  if(N===1) return {first, full};
+
+  function sampleDelay(i,j){
+    const d = baseDelay[i][j] + randn(rng)*jitterStd;
+    return Math.max(0.1, d);
+  }
+
+  if(dissMode==="direct"){
+    const recips = [];
+    for(let i=0;i<N;i++) if(i!==proposer) recips.push(i);
+    for(let i=recips.length-1;i>0;i--){
+      const j = Math.floor(rng()*(i+1));
+      [recips[i],recips[j]]=[recips[j],recips[i]];
+    }
+    const laneAvail = Array(sendConc).fill(haveTime);
+    for(const to of recips){
+      let bestLane=0;
+      for(let l=1;l<sendConc;l++) if(laneAvail[l]<laneAvail[bestLane]) bestLane=l;
+      const start = laneAvail[bestLane] + ppSer;
+      laneAvail[bestLane] = start + sendDur;
+      const net = sampleDelay(proposer, to);
+      first[to] = start + net;
+      full[to]  = start + sendDur + net;
+    }
+    return {first, full};
+  }
+
+  const k = Math.max(1, fanoutK|0);
+  const infected = Array(N).fill(false);
+  infected[proposer]=true;
+
+  const fanoutRem = Array(N).fill(k);
+  const lanesAvail = Array.from({length:N}, ()=>Array(sendConc).fill(Infinity));
+  for(let l=0;l<sendConc;l++) lanesAvail[proposer][l]=haveTime;
+
+  const targets = [];
+  for(let i=0;i<N;i++) if(i!==proposer) targets.push(i);
+  for(let i=targets.length-1;i>0;i--){
+    const j=Math.floor(rng()*(i+1));
+    [targets[i],targets[j]]=[targets[j],targets[i]];
+  }
+
+  function nextLaneTime(node){
+    let t=lanesAvail[node][0];
+    for(let l=1;l<lanesAvail[node].length;l++) if(lanesAvail[node][l]<t) t=lanesAvail[node][l];
+    return t;
+  }
+  function occupyLane(node, start){
+    let best=0;
+    for(let l=1;l<lanesAvail[node].length;l++) if(lanesAvail[node][l]<lanesAvail[node][best]) best=l;
+    lanesAvail[node][best] = start + sendDur;
+  }
+
+  const sendHeap = new MinHeap();
+  const delivHeap = new MinHeap();
+
+  sendHeap.push({t: nextLaneTime(proposer), node: proposer});
+
+  while(targets.length>0 && (sendHeap.size()>0 || delivHeap.size()>0)){
+    const nextSend = sendHeap.peek();
+    const nextDel  = delivHeap.peek();
+
+    if(nextSend && (!nextDel || nextSend.t <= nextDel.t)){
+      const ev = sendHeap.pop();
+      const from = ev.node;
+      if(!infected[from]) continue;
+      if(fanoutRem[from]<=0) continue;
+      if(targets.length===0) break;
+
+      const to = targets.pop();
+
+      const start = Math.max(ev.t, full[from]) + ppSer;
+      occupyLane(from, start);
+      fanoutRem[from]--;
+
+      const net = sampleDelay(from,to);
+      const firstT = start + net;
+      const fullT  = start + sendDur + net;
+
+      delivHeap.push({t: fullT, to, firstT});
+
+      if(fanoutRem[from]>0 && targets.length>0){
+        sendHeap.push({t: nextLaneTime(from), node: from});
+      }
+      continue;
+    }
+
+    const dv = delivHeap.pop();
+    const to = dv.to;
+    if(infected[to]) continue;
+    infected[to]=true;
+    full[to]=dv.t;
+    first[to]=dv.firstT;
+
+    for(let l=0;l<sendConc;l++) lanesAvail[to][l]=full[to];
+    if(fanoutRem[to]>0 && targets.length>0){
+      sendHeap.push({t: nextLaneTime(to), node: to});
+    }
+  }
+
+  for(let i=0;i<N;i++){
+    if(!isFinite(full[i])){
+      full[i]=1e9; first[i]=1e9;
+    }
+  }
+  return {first, full};
+}
+
+/* ========= Consensus simulation (Monte Carlo) ========= */
+function simulateOnce(cfg, rng){
+  const {
+    N,Q, nodes, baseDelay,
+    txCount, txRef, execRefMs, insertExtraMs, alpha, reusePct, verifyMs,
+    ppType, bodyMB, hitRate, missPenalty, streamStart, prepareOnHeader,
+    bandwidthGbps, sendConc, dissMode, fanoutK, ppSer,
+    prepareGate, commitGate,
+    jitterStd, msgProc, pcOver
+  } = cfg;
+
+  const proposer=0;
+  const ratio = txCount / Math.max(1, txRef);
+  const execTotal = (execRefMs + insertExtraMs) * Math.pow(ratio, alpha);
+
+  const effReuse = (ppType==="fullbody") ? (reusePct/100.0) : (reusePct/100.0) * (hitRate/100.0);
+  const execPost = execTotal * (1.0 - clamp(effReuse,0,0.95)) + verifyMs;
+
+  const bytes = ppBytes(ppType, txCount, bodyMB);
+  const sendDur = (bytes*8.0)/(bandwidthGbps*1e9)*1000.0 + ppSer;
+
+  const haveTime = execTotal;
+
+  const pp = simulatePPDissemination(nodes, baseDelay, rng, haveTime, sendDur, 0.0, jitterStd, sendConc, dissMode, fanoutK);
+  const firstRecv = pp.first;
+  const fullRecv  = pp.full;
+
+  const ppReady = Array(N).fill(0);
+  const execStart = Array(N).fill(0);
+  const execEnd = Array(N).fill(0);
+
+  const missPen = (ppType==="fullbody") ? 0.0 : (1.0 - hitRate/100.0) * missPenalty;
+
+  for(let i=0;i<N;i++){
+    if(i===proposer){
+      ppReady[i]=haveTime;
+      execStart[i]=0.0;
+      execEnd[i]=haveTime;
+      continue;
+    }
+    if(ppType==="fullbody"){
+      ppReady[i]=(prepareOnHeader==="on") ? firstRecv[i] : fullRecv[i];
+      execStart[i]=(streamStart==="on") ? firstRecv[i] : fullRecv[i];
+      execEnd[i]=Math.max(execStart[i]+execPost, fullRecv[i]) + missPen;
+    }else{
+      ppReady[i]=fullRecv[i];
+      execStart[i]=fullRecv[i];
+      execEnd[i]=execStart[i]+execPost + missPen;
+    }
+  }
+
+  const delay = Array.from({length:N}, ()=>Array(N).fill(0));
+  for(let i=0;i<N;i++){
+    for(let j=0;j<N;j++){
+      if(i===j){ delay[i][j]=0; continue; }
+      const d = baseDelay[i][j] + randn(rng)*jitterStd;
+      delay[i][j] = Math.max(0.1, d) + msgProc;
+    }
+  }
+
+  const kNeed = Math.max(0, Math.min(N-1, Q-1));
+
+  const prepSend = Array(N).fill(0);
+  for(let i=0;i<N;i++){
+    prepSend[i] = (prepareGate==="after_exec") ? (execEnd[i] + pcOver) : (ppReady[i] + pcOver);
+  }
+
+  const prepReady = Array(N).fill(0);
+  for(let i=0;i<N;i++){
+    if(kNeed===0){ prepReady[i]=prepSend[i]; continue; }
+    const arrivals=[];
+    for(let j=0;j<N;j++){
+      if(j===i) continue;
+      arrivals.push(prepSend[j]+delay[j][i]);
+    }
+    arrivals.sort((a,b)=>a-b);
+    prepReady[i]=Math.max(prepSend[i], arrivals[kNeed-1]);
+  }
+
+  const commitSend = Array(N).fill(0);
+  for(let i=0;i<N;i++){
+    const base = (commitGate==="unsafe") ? prepReady[i] : Math.max(execEnd[i], prepReady[i]);
+    commitSend[i]=base + pcOver;
+  }
+
+  let commitReadyProp = commitSend[proposer];
+  if(kNeed>0){
+    const carr=[];
+    for(let j=0;j<N;j++){
+      if(j===proposer) continue;
+      carr.push(commitSend[j]+delay[j][proposer]);
+    }
+    carr.sort((a,b)=>a-b);
+    commitReadyProp = Math.max(commitSend[proposer], carr[kNeed-1]);
+  }
+
+  const ppSorted = ppReady.slice().sort((a,b)=>a-b);
+  const exSorted = execEnd.slice().sort((a,b)=>a-b);
+  const qIdx = Math.min(N-1, Math.max(0, Q-1));
+  const ppQ = ppSorted[qIdx];
+  const exQ = exSorted[qIdx];
+
+  return { commit: commitReadyProp, ppQ, exQ, execTotal, execPost, ppBytes: bytes, ppSendOne: sendDur };
+}
+
+function simulate(cfg){
+  const iters = cfg.iters;
+  const seed = cfg.seed;
+  const rng = mulberry32(seed);
+  const commits=[], ppQs=[], exQs=[];
+  let last=null;
+  for(let i=0;i<iters;i++){
+    const r=simulateOnce(cfg,rng);
+    commits.push(r.commit);
+    ppQs.push(r.ppQ);
+    exQs.push(r.exQ);
+    last=r;
+  }
+  return {commits, ppQs, exQs, last};
+}
+
+/* ========= Rendering (hist + timeline) ========= */
+function renderHistogram(commits, blockTime){
+  const w=820, h=220, pad=35;
+  const maxX = Math.max(blockTime*1.5, pct(commits,99)*1.1);
+  const bins = 24;
+  const counts = Array(bins).fill(0);
+  for(const x of commits){
+    const b = Math.min(bins-1, Math.max(0, Math.floor((x/maxX)*bins)));
+    counts[b]++;
+  }
+  const maxC = Math.max(...counts,1);
+  const bw = (w-2*pad)/bins;
+
+  const x = (t)=> pad + (t/maxX)*(w-2*pad);
+  const y = (c)=> h-pad - (c/maxC)*(h-2*pad);
+
+  let s='';
+  s += `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">`;
+  s += `<rect width="100%" height="100%" fill="#fff"/>`;
+  s += `<line x1="${pad}" y1="${h-pad}" x2="${w-pad}" y2="${h-pad}" stroke="#111" stroke-width="2"/>`;
+  s += `<line x1="${pad}" y1="${pad}" x2="${pad}" y2="${h-pad}" stroke="#111" stroke-width="2"/>`;
+  s += `<text x="${pad}" y="18" font-family="ui-monospace,Menlo,Consolas" font-size="12" fill="#111">commit time histogram</text>`;
+
+  const xb = x(blockTime);
+  s += `<line x1="${xb}" y1="${pad}" x2="${xb}" y2="${h-pad}" stroke="#b91c1c" stroke-width="2" stroke-dasharray="6 4"/>`;
+  s += `<text x="${Math.min(w-pad-140, xb+6)}" y="${pad+12}" font-family="ui-monospace,Menlo,Consolas" font-size="11" fill="#b91c1c">blockTime=${blockTime}ms</text>`;
+
+  for(let i=0;i<bins;i++){
+    const c=counts[i];
+    const rx = pad + i*bw + 1;
+    const ry = y(c);
+    const rh = (h-pad) - ry;
+    s += `<rect x="${rx}" y="${ry}" width="${bw-2}" height="${rh}" fill="#e6f2ff" stroke="#111" stroke-width="1"/>`;
+  }
+  const ticks=5;
+  for(let i=0;i<=ticks;i++){
+    const t = (maxX/ticks)*i;
+    const xt = x(t);
+    s += `<line x1="${xt}" y1="${h-pad}" x2="${xt}" y2="${h-pad+4}" stroke="#111" stroke-width="1"/>`;
+    s += `<text x="${xt-10}" y="${h-pad+18}" font-family="ui-monospace,Menlo,Consolas" font-size="10" fill="#111">${Math.round(t)}</text>`;
+  }
+  s += `</svg>`;
+  byId("histWrap").innerHTML = s;
+}
+
+function renderTimeline(cfg, stats){
+  const rounds = cfg.rounds;
+  const blockTime = cfg.blockTime;
+  const zoom = cfg.zoom;
+
+  const width = 1800;
+  const left = 280;
+  const right = 30;
+  const topAxisY = 70;
+
+  const timeMax = rounds*blockTime;
+  const plotW = width-left-right;
+  const scale = plotW/timeMax;
+  const laneH = 42, laneGap=10;
+
+  const lanesPerRound = 3;
+  const nLanes = rounds*lanesPerRound;
+  const height = 70 + nLanes*(laneH+laneGap) + 80;
+
+  function X(ms){ return left + ms*scale; }
+
+  const tickStep = (timeMax<=2500)?250:(timeMax<=6000?500:1000);
+  const ticks=[];
+  for(let t=0;t<=timeMax;t+=tickStep) ticks.push(t);
+
+  const exec = stats.execTotal;
+  const ppQ = stats.ppQ95;
+  const exQ = stats.exQ95;
+  const cr  = stats.commit95;
+
+  const d1 = exec;
+  const d2 = Math.max(0, ppQ - exec);
+  const d3 = Math.max(0, exQ - ppQ);
+  const d4 = Math.max(0, cr - exQ);
+
+  const style = `
+    .t{font-family:ui-monospace,Menlo,Consolas,monospace;fill:#111}
+    .title{font-size:16px;font-weight:700}
+    .small{font-size:11px}
+    .lbl{font-size:12px;font-weight:700}
+    .axis{stroke:#111;stroke-width:2}
+    .grid{stroke:#d0d0d0;stroke-width:1}
+    .marker{stroke:#111;stroke-width:1.5;stroke-dasharray:6 4}
+    .lane{fill:#fff;stroke:#111;stroke-width:1}
+    .bar1{fill:#e6f2ff;stroke:#111;stroke-width:1}
+    .bar2{fill:#fff3e6;stroke:#111;stroke-width:1}
+    .bar3{fill:#e9ffe6;stroke:#111;stroke-width:1}
+    .bar4{fill:#f3e8ff;stroke:#111;stroke-width:1}
+    .bad{fill:#ffe6e6;stroke:#111;stroke-width:1}
+  `;
+
+  let s='';
+  s += `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
+  s += `<defs><style>${style}</style></defs>`;
+  s += `<rect width="100%" height="100%" fill="#fff"/>`;
+  s += `<text class="t title" x="20" y="28">IBFT timeline (p95 approximation) — N=${cfg.N}, Q=${cfg.Q}, PP=${cfg.ppType}, bw=${cfg.bandwidthGbps}Gbps</text>`;
+  s += `<text class="t small" x="20" y="48">commit_p95=${cr.toFixed(1)}ms, slack=${(cfg.blockTime-cr).toFixed(1)}ms | exec_total=${exec.toFixed(1)}ms, PPQ_p95=${ppQ.toFixed(1)}ms, EXQ_p95=${exQ.toFixed(1)}ms</text>`;
+
+  s += `<line class="axis" x1="${left}" y1="${topAxisY}" x2="${width-right}" y2="${topAxisY}"/>`;
+  for(const t of ticks){
+    const xt = X(t);
+    s += `<line class="grid" x1="${xt}" y1="${topAxisY+10}" x2="${xt}" y2="${height-35}"/>`;
+    s += `<text class="t small" x="${xt-12}" y="${topAxisY-10}">${t}</text>`;
+  }
+  for(let r=1;r<=rounds;r++){
+    const ms=r*blockTime;
+    const xm=X(ms);
+    s += `<line class="marker" x1="${xm}" y1="${topAxisY+10}" x2="${xm}" y2="${height-35}"/>`;
+    s += `<text class="t small" x="${xm-34}" y="${topAxisY+24}">${ms}ms</text>`;
+  }
+
+  const y0 = topAxisY + 55;
+
+  for(let r=1;r<=rounds;r++){
+    const roundStart=(r-1)*blockTime;
+
+    const tExecStart=roundStart;
+    const tExecEnd=roundStart + d1;
+
+    const tPPQEnd = tExecEnd + d2;
+    const tEXQEnd = tPPQEnd + d3;
+    const tCmtEnd = tEXQEnd + d4;
+
+    const base=(r-1)*lanesPerRound;
+    const yProp = y0 + base*(laneH+laneGap);
+    const yCrit = y0 + (base+1)*(laneH+laneGap);
+    const yMark = y0 + (base+2)*(laneH+laneGap);
+
+    s += `<rect class="lane" x="20" y="${yProp}" width="${width-40}" height="${laneH}"/>`;
+    s += `<text class="t lbl" x="30" y="${yProp+26}">Round ${r}: proposer exec</text>`;
+    s += `<rect class="bar1" x="${X(tExecStart)}" y="${yProp+7}" width="${(d1*scale)}" height="${laneH-14}"/>`;
+    s += `<text class="t small" x="${X(tExecStart)+6}" y="${yProp+26}">${Math.round(tExecStart)}-${Math.round(tExecEnd)}</text>`;
+
+    s += `<rect class="lane" x="20" y="${yCrit}" width="${width-40}" height="${laneH}"/>`;
+    s += `<text class="t lbl" x="30" y="${yCrit+26}">Quorum-critical path (approx): PP→Exec→Consensus</text>`;
+
+    s += `<rect class="bar2" x="${X(tExecEnd)}" y="${yCrit+7}" width="${(d2*scale)}" height="${laneH-14}"/>`;
+    s += `<rect class="bar3" x="${X(tPPQEnd)}" y="${yCrit+7}" width="${(d3*scale)}" height="${laneH-14}"/>`;
+    const cls4 = (tCmtEnd <= roundStart+blockTime) ? "bar4" : "bad";
+    s += `<rect class="${cls4}" x="${X(tEXQEnd)}" y="${yCrit+7}" width="${(d4*scale)}" height="${laneH-14}"/>`;
+    s += `<text class="t small" x="${X(tExecEnd)+6}" y="${yCrit+26}">PPQ +${d2.toFixed(0)}ms</text>`;
+    s += `<text class="t small" x="${X(tPPQEnd)+6}" y="${yCrit+26}">EXQ +${d3.toFixed(0)}ms</text>`;
+    s += `<text class="t small" x="${X(tEXQEnd)+6}" y="${yCrit+26}">CONS +${d4.toFixed(0)}ms</text>`;
+
+    s += `<rect class="lane" x="20" y="${yMark}" width="${width-40}" height="${laneH}"/>`;
+    s += `<text class="t lbl" x="30" y="${yMark+26}">Markers</text>`;
+
+    const m1 = roundStart + stats.commit50;
+    const m2 = roundStart + stats.commit95;
+    s += `<line x1="${X(m1)}" y1="${yMark+8}" x2="${X(m1)}" y2="${yMark+laneH-8}" stroke="#111" stroke-width="2"/>`;
+    s += `<line x1="${X(m2)}" y1="${yMark+8}" x2="${X(m2)}" y2="${yMark+laneH-8}" stroke="#111" stroke-width="2" stroke-dasharray="6 4"/>`;
+    s += `<text class="t small" x="${X(m1)+6}" y="${yMark+24}">commit p50 @ ${m1.toFixed(0)}ms</text>`;
+    s += `<text class="t small" x="${X(m2)+6}" y="${yMark+38}">commit p95 @ ${m2.toFixed(0)}ms</text>`;
+  }
+
+  s += `</svg>`;
+  const wrap = byId("svgWrap");
+  wrap.innerHTML = s;
+  wrap.style.transform = "scale(" + zoom + ")";
+}
+
+/* ================= Quick cw Timeline (v4-style) ================= */
+function computeCw(delta, sigma, cwModel){
+  const a = (cwModel === "ibft_fast") ? 6.0 : 8.0;
+  return a * delta + sigma;
+}
+function computeModeEffectivePp(ppSend, mode){
+  if(mode === "fanout8") return ppSend / 8.0;
+  if(mode === "compact") return Math.max(1.0, ppSend);
+  return ppSend;
+}
+function cwTimelineRender(){
+  const rounds = clamp(num("rounds"), 1, 20);
+  const blockTime = clamp(num("blockTime"), 200, 5000);
+
+  // derive E from shared inputs (exec_total at current txCount)
+  const txCount = clamp(num("txCount"), 1, 200000);
+  const txRef = clamp(num("txRef"), 1, 200000);
+  const execRefMs = clamp(num("execRefMs"), 0, 4000);
+  const insertExtraMs = clamp(num("insertExtraMs"), 0, 4000);
+  const alpha = clamp(num("alpha"), 0, 3);
+  const ratio = txCount / Math.max(1, txRef);
+  const execTotal = (execRefMs + insertExtraMs) * Math.pow(ratio, alpha);
+
+  const delta = clamp(num("cw_delta"), 0, 1000);
+  const queue = clamp(num("cw_queue"), 0, 2000);
+  const sigma = clamp(num("cw_sigma"), 0, 4000);
+  const cwModel = val("cw_model");
+  const mode = val("cw_mode");
+  const zoom = parseFloat(val("zoom"));
+
+  const ppMbps = clamp(num("cw_ppMbps"), 1, 1e9);
+  const ppType = val("ppType");
+  const bodyMB = clamp(num("bodyMB"), 0.0001, 1e6);
+  const ppSer = clamp(num("ppSer"), 0, 1e6);
+  const hitRatePct = clamp(num("hitRate"), 0, 100);
+  const missPenalty = clamp(num("missPenalty"), 0, 1e6);
+
+  const cw = computeCw(delta, sigma, cwModel);
+
+  const ppB = ppBytes(ppType, txCount, bodyMB);
+  const bps = ppMbps * 1e6;
+  const ppSend = (ppB * 8.0 / bps) * 1000.0 + ppSer;
+
+  const hit = hitRatePct / 100.0;
+  const bodyPenalty = (ppType === "fullbody") ? 0.0 : (1.0 - hit) * missPenalty;
+
+  // rx start quantiles: execEnd + delta+queue + q*ppEff
+  const ppEff = computeModeEffectivePp(ppSend, mode);
+  const rx95 = (delta + queue + 0.95*ppEff) + bodyPenalty;
+  byId("cwOut").textContent = cw.toFixed(1);
+  byId("cw_rx95").textContent = rx95.toFixed(1);
+
+  // render SVG
+  const width = 1800, leftMargin = 270, rightMargin = 30, topAxisY = 80;
+  const timeMax = rounds * blockTime;
+  const plotW = width - leftMargin - rightMargin;
+  const scale = plotW / timeMax;
+
+  const laneH = 40, laneGap = 8;
+  const lanesPerRound = 3;
+  const nLanes = rounds * lanesPerRound;
+  const height = 70 + (nLanes * (laneH + laneGap)) + 90;
+
+  function x(ms){ return leftMargin + ms * scale; }
+  let tickStep = 500;
+  if(timeMax <= 2000) tickStep = 250;
+  if(timeMax >= 8000) tickStep = 1000;
+  const ticks = [];
+  for(let t=0; t<=timeMax; t+=tickStep) ticks.push(t);
+
+  const style = `
+    .t{font-family:ui-monospace,Menlo,Consolas,monospace;fill:#111}
+    .title{font-size:16px;font-weight:700}
+    .lbl{font-size:12px;font-weight:700}
+    .small{font-size:11px}
+    .axis{stroke:#111;stroke-width:2}
+    .grid{stroke:#d0d0d0;stroke-width:1}
+    .lane{fill:#fff;stroke:#111;stroke-width:1}
+    .barExec{fill:#e6f2ff;stroke:#111;stroke-width:1}
+    .barSend{fill:#fff3e6;stroke:#111;stroke-width:1}
+    .barCons{fill:#e9ffe6;stroke:#111;stroke-width:1}
+    .barVal{fill:#f5f5f5;stroke:#111;stroke-width:1}
+    .barVal95{fill:none;stroke:#111;stroke-width:2;stroke-dasharray:6 4}
+    .warn{fill:#ffe6e6;stroke:#111;stroke-width:1}
+    .marker{stroke:#111;stroke-width:1.5;stroke-dasharray:6 4}
+  `;
+
+  let s = '';
+  s += `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
+  s += `<defs><style>${style}</style></defs>`;
+  s += `<rect width="100%" height="100%" fill="#fff"/>`;
+  s += `<text class="t title" x="20" y="28">Quick cw timeline (Exec includes insert; no geo matrix)</text>`;
+  s += `<text class="t small" x="20" y="48">E=${execTotal.toFixed(1)}ms, cw=${cw.toFixed(1)}ms (Δ=${delta}ms, σ=${sigma}ms), pp_send=${ppSend.toFixed(2)}ms, mode=${mode}</text>`;
+
+  s += `<line class="axis" x1="${leftMargin}" y1="${topAxisY}" x2="${width-rightMargin}" y2="${topAxisY}"/>`;
+  for(const t of ticks){
+    const xt = x(t);
+    s += `<line class="grid" x1="${xt.toFixed(1)}" y1="${(topAxisY+10)}" x2="${xt.toFixed(1)}" y2="${(height-40)}"/>`;
+    s += `<text class="t small" x="${(xt-12).toFixed(1)}" y="${(topAxisY-10)}">${t}</text>`;
+  }
+  for(let r=1; r<=rounds; r++){
+    const ms = r * blockTime;
+    const xm = x(ms);
+    s += `<line class="marker" x1="${xm.toFixed(1)}" y1="${(topAxisY+10)}" x2="${xm.toFixed(1)}" y2="${(height-40)}"/>`;
+    s += `<text class="t small" x="${(xm-38).toFixed(1)}" y="${(topAxisY+26)}">${ms}ms</text>`;
+  }
+
+  const y0 = topAxisY + 55;
+  for(let r=1; r<=rounds; r++){
+    const roundStart = (r-1) * blockTime;
+
+    const execStart = roundStart;
+    const execEnd = execStart + execTotal;
+    const sendStart = execEnd;
+    const sendEnd = sendStart + ppSend;
+
+    const consStart = sendEnd;
+    const consEnd = consStart + cw;
+
+    // rx starts
+    const rxP50 = execEnd + delta + queue + 0.50*ppEff + bodyPenalty;
+    const rxP95 = execEnd + delta + queue + 0.95*ppEff + bodyPenalty;
+
+    const valStart50 = rxP50;
+    const valStart95 = rxP95;
+    const valEnd50 = valStart50 + execTotal;
+    const valEnd95 = valStart95 + execTotal;
+
+    const base = (r-1) * lanesPerRound;
+    const yProp = y0 + base * (laneH + laneGap);
+    const yCons = y0 + (base+1) * (laneH + laneGap);
+    const yVal  = y0 + (base+2) * (laneH + laneGap);
+
+    s += `<rect class="lane" x="20" y="${yProp}" width="${width-40}" height="${laneH}"/>`;
+    s += `<text class="t lbl" x="30" y="${yProp+26}">Proposer v${r}</text>`;
+
+    s += `<rect class="lane" x="20" y="${yCons}" width="${width-40}" height="${laneH}"/>`;
+    s += `<text class="t lbl" x="30" y="${yCons+26}">Consensus window (cw)</text>`;
+
+    s += `<rect class="lane" x="20" y="${yVal}" width="${width-40}" height="${laneH}"/>`;
+    s += `<text class="t lbl" x="30" y="${yVal+26}">Validators: exec (p50 solid / p95 dashed)</text>`;
+
+    s += `<rect class="barExec" x="${x(execStart).toFixed(1)}" y="${yProp+6}" width="${(execTotal*scale).toFixed(1)}" height="${laneH-12}"/>`;
+    s += `<rect class="barSend" x="${x(sendStart).toFixed(1)}" y="${yProp+6}" width="${(ppSend*scale).toFixed(1)}" height="${laneH-12}"/>`;
+
+    s += `<rect class="barCons" x="${x(consStart).toFixed(1)}" y="${yCons+6}" width="${(cw*scale).toFixed(1)}" height="${laneH-12}"/>`;
+
+    const cls50 = (valEnd50 <= consEnd) ? "barVal" : "warn";
+    s += `<rect class="${cls50}" x="${x(valStart50).toFixed(1)}" y="${yVal+6}" width="${(execTotal*scale).toFixed(1)}" height="${laneH-12}"/>`;
+    s += `<rect class="barVal95" x="${x(valStart95).toFixed(1)}" y="${yVal+6}" width="${(execTotal*scale).toFixed(1)}" height="${laneH-12}"/>`;
+
+    s += `<text class="t small" x="${(x(valStart95)+6).toFixed(1)}" y="${yVal+38}">p95 end ${valEnd95.toFixed(1)} | cw end ${consEnd.toFixed(1)} | slack ${(consEnd-valEnd95).toFixed(1)}ms</text>`;
+  }
+
+  s += `</svg>`;
+  const wrap = byId("cwSvgWrap");
+  wrap.innerHTML = s;
+  wrap.style.transform = "scale(" + zoom + ")";
+}
+
+/* ========= UI updates / config ========= */
+function setText(id, txt){ byId(id).textContent = txt; }
+function classifySlack(slack){
+  if(slack>=80) return "good";
+  if(slack>=0) return "warn";
+  return "bad";
+}
+
+function applyLatencyPreset(){
+  const p = val("latPreset");
+  if(p==="cloudping_p50"){
+    byId("rttST").value = "34.89";
+    byId("rttSS").value = "69.33";
+    byId("rttTS").value = "69.93";
+  }
+}
+function applyBandwidthPreset(){
+  const p = val("bandwidthPreset");
+  if(p==="custom") return;
+  byId("bandwidthGbps").value = p;
+}
+function computeBftNote(N,Q){
+  const need = Math.floor((2*N)/3) + 1;
+  let msg = `표준 IBFT 관점 참고: N=${N}이면 통상 quorum(2f+1)≈${need} 근처가 필요합니다. 현재 Q=${Q}. `;
+  if(Q < need){
+    msg += `→ <span class="badge">WARNING</span> Q가 표준 2f+1보다 작습니다(성능은 빨라지나 BFT 안전성 가정과 어긋날 수 있음).`;
+  }else{
+    msg += `→ <span class="badge">OK</span>`;
+  }
+  return msg;
+}
+
+function buildConfig(){
+  const N = clamp(num("N"), 4, 200);
+  let Q = clamp(num("Q"), 1, 200);
+  Q = Math.min(Q, N);
+
+  const rounds = clamp(num("rounds"), 1, 20);
+  const blockTime = clamp(num("blockTime"), 200, 5000);
+
+  const txCount = clamp(num("txCount"), 1, 200000);
+  const txRef = clamp(num("txRef"), 1, 200000);
+  const execRefMs = clamp(num("execRefMs"), 0, 4000);
+  const insertExtraMs = clamp(num("insertExtraMs"), 0, 4000);
+  const alpha = clamp(num("alpha"), 0, 3);
+  const reusePct = clamp(num("reusePct"), 0, 90);
+  const verifyMs = clamp(num("verifyMs"), 0, 500);
+
+  const ppType = val("ppType");
+  const bodyMB = clamp(num("bodyMB"), 0.01, 50);
+  const hitRate = clamp(num("hitRate"), 0, 100);
+  const missPenalty = clamp(num("missPenalty"), 0, 2000);
+  const streamStart = val("streamStart");
+  const prepareOnHeader = val("prepareOnHeader");
+
+  const bandwidthGbps = clamp(num("bandwidthGbps"), 0.1, 1000);
+  const sendConc = clamp(num("sendConc"), 1, 16);
+  const dissMode = val("dissMode");
+  const fanoutK = clamp(num("fanoutK"), 1, 32);
+
+  const rttST = clamp(num("rttST"), 0, 5000);
+  const rttSS = clamp(num("rttSS"), 0, 5000);
+  const rttTS = clamp(num("rttTS"), 0, 5000);
+
+  const nSEO = clamp(num("nSEO"), 0, 200);
+  const nTYO = clamp(num("nTYO"), 0, 200);
+  const nSIN = clamp(num("nSIN"), 0, 200);
+  const propCity = val("propCity");
+
+  const queueMs = clamp(num("queueMs"), 0, 200);
+  const jitterStd = clamp(num("jitterStd"), 0, 50);
+  const msgProc = clamp(num("msgProc"), 0, 50);
+  const pcOver = clamp(num("pcOver"), 0, 50);
+  const ppSer = clamp(num("ppSer"), 0, 200);
+
+  const iters = clamp(num("iters"), 50, 10000);
+  const seed = clamp(num("seed"), 0, 999999);
+  const zoom = parseFloat(val("zoom"));
+
+  const nodes = buildNodeCities(N, nSEO, nTYO, nSIN, propCity);
+  const rtt = makeCityMatrix(rttST, rttSS, rttTS);
+  const baseDelay = baseDelayMatrix(nodes, rtt, queueMs);
+
+  const prepareGate = val("prepareGate");
+  const commitGate = val("commitGate");
+
+  const ratio = txCount / Math.max(1, txRef);
+  const execTotal = (execRefMs + insertExtraMs) * Math.pow(ratio, alpha);
+  const effReuse = (ppType==="fullbody") ? (reusePct/100.0) : (reusePct/100.0) * (hitRate/100.0);
+  const execPost = execTotal * (1.0 - clamp(effReuse,0,0.95)) + verifyMs;
+
+  const bytes = ppBytes(ppType, txCount, bodyMB);
+  const sendDur = (bytes*8.0)/(bandwidthGbps*1e9)*1000.0 + ppSer;
+
+  setText("execTotalOut", fmt(execTotal,1));
+  setText("execPostOut", fmt(execPost,1));
+  setText("ppKBOut", fmt(bytes/1024.0,1));
+  setText("ppSendOut", fmt(sendDur,2));
+  byId("bftNote").innerHTML = computeBftNote(N,Q);
+
+  return {
+    N,Q, rounds, blockTime,
+    txCount, txRef, execRefMs, insertExtraMs, alpha, reusePct, verifyMs,
+    ppType, bodyMB, hitRate, missPenalty, streamStart, prepareOnHeader,
+    bandwidthGbps, sendConc, dissMode, fanoutK, ppSer,
+    rttST, rttSS, rttTS, nodes, baseDelay, propCity,
+    queueMs, jitterStd, msgProc, pcOver,
+    iters, seed, zoom,
+    prepareGate, commitGate
+  };
+}
+
+let debounceHandle=null;
+
+function setStatus(msg){ byId("status").textContent = msg; }
+
+function runAndRender(){
+  const cfg = buildConfig();
+  const t0 = performance.now();
+  setStatus("Running…");
+
+  const out = simulate(cfg);
+  const t1 = performance.now();
+
+  const commits = out.commits;
+  const ppQs = out.ppQs;
+  const exQs = out.exQs;
+
+  const commit50 = pct(commits,50);
+  const commit95 = pct(commits,95);
+  const commit99 = pct(commits,99);
+  const ppQ50 = pct(ppQs,50);
+  const ppQ95 = pct(ppQs,95);
+  const exQ50 = pct(exQs,50);
+  const exQ95 = pct(exQs,95);
+
+  const succ = commits.filter(x=>x<=cfg.blockTime).length / commits.length;
+  const slack = cfg.blockTime - commit95;
+
+  setText("outCommit50", fmt(commit50,1));
+  setText("outCommit95", fmt(commit95,1));
+  setText("outCommit99", fmt(commit99,1));
+  setText("outSlack", fmt(slack,1));
+
+  setText("outPPQ50", fmt(ppQ50,1));
+  setText("outPPQ95", fmt(ppQ95,1));
+  setText("outEXQ50", fmt(exQ50,1));
+  setText("outEXQ95", fmt(exQ95,1));
+  setText("outCR50", fmt(commit50,1));
+  setText("outCR95", fmt(commit95,1));
+
+  const kpiCommit = byId("kpiCommit95");
+  kpiCommit.textContent = fmt(commit95,1);
+  const cls = classifySlack(slack);
+  kpiCommit.className = "v " + cls;
+
+  const kpiSucc = byId("kpiSucc");
+  kpiSucc.textContent = (succ*100).toFixed(1) + "%";
+  kpiSucc.className = "v " + (succ>=0.9 ? "good" : (succ>=0.6 ? "warn" : "bad"));
+
+  // quick notes
+  const notes = [];
+  notes.push(`iters=${cfg.iters}, time=${(t1-t0).toFixed(0)}ms`);
+  notes.push(`pp=${cfg.ppType}, bw=${cfg.bandwidthGbps}Gbps, diss=${cfg.dissMode}${cfg.dissMode==="tree" ? "(k="+cfg.fanoutK+")" : ""}, conc=${cfg.sendConc}`);
+  notes.push(`exec_total≈${(out.last?out.last.execTotal:NaN).toFixed(1)}ms, reuse=${cfg.reusePct}% (hit=${cfg.hitRate}%)`);
+  notes.push(`prepareGate=${cfg.prepareGate}, commitGate=${cfg.commitGate}`);
+  byId("quickNotes").innerHTML = `<span class="mono">${notes.join("<br/>")}</span>`;
+
+  renderHistogram(commits, cfg.blockTime);
+  renderTimeline(cfg, {
+    commit50, commit95,
+    ppQ95, exQ95,
+    execTotal: (out.last ? out.last.execTotal : NaN)
+  });
+
+  // cw timeline refresh too
+  cwTimelineRender();
+
+  setStatus(`Done. ${commits.length} iters in ${(t1-t0).toFixed(0)}ms.`);
+}
+
+function schedule(){
+  if(!byId("autoRun").checked) return;
+  if(debounceHandle) clearTimeout(debounceHandle);
+  debounceHandle = setTimeout(runAndRender, 140);
+}
+
+/* ========= Sweep ========= */
+function runSweep(){
+  const base = buildConfig();
+  const iters = Math.max(120, Math.floor(base.iters/2));
+  const seedBase = base.seed;
+  const bws=[1,5,10];
+  const ppTypes=["fullbody","txhashes","shortids","headeronly"];
+  const tbody = byId("sweepTable").querySelector("tbody");
+  tbody.innerHTML = "";
+
+  for(const bw of bws){
+    for(const pt of ppTypes){
+      const cfg = {...base, bandwidthGbps:bw, ppType:pt, iters:iters, seed: seedBase + bw*100 + pt.length};
+      // rebuild dependent derived fields for display (but simulation uses cfg)
+      const out = simulate(cfg);
+      const commits = out.commits;
+      const p50 = pct(commits,50);
+      const p95 = pct(commits,95);
+      const succ = commits.filter(x=>x<=cfg.blockTime).length/commits.length;
+      const notes = (pt==="fullbody" && bw===1 && cfg.dissMode==="direct") ? "leader egress tail likely dominates" : "";
+
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${bw}Gbps</td><td class="mono">${pt}</td><td>${p50.toFixed(1)}ms</td><td>${p95.toFixed(1)}ms</td><td>${(succ*100).toFixed(1)}%</td><td>${notes}</td>`;
+      tbody.appendChild(tr);
+    }
+  }
+}
+
+/* ========= cw sync heuristic ========= */
+function syncCwFromGeo(){
+  // use maximum RTT among pairs /2 as conservative delta
+  const st = num("rttST"), ss = num("rttSS"), ts = num("rttTS");
+  const maxRtt = Math.max(st, ss, ts);
+  const delta = Math.max(0, maxRtt/2.0);
+  byId("cw_delta").value = delta.toFixed(1);
+  cwTimelineRender();
+}
+
+/* ========= Bind ========= */
+function bind(){
+  // presets
+  byId("preset_base").addEventListener("click", ()=>{
+    byId("N").value = 50;
+    byId("Q").value = 17;
+    byId("txCount").value = 10000;
+    byId("txRef").value = 10000;
+    byId("execRefMs").value = 450;
+    byId("insertExtraMs").value = 0;
+    byId("alpha").value = 1.0;
+    byId("reusePct").value = 0;
+    byId("commitGate").value = "after_exec";
+    byId("prepareGate").value = "after_pp";
+    byId("ppType").value = "txhashes";
+    byId("hitRate").value = 98;
+    byId("bandwidthPreset").value = "custom";
+    byId("bandwidthGbps").value = 1;
+    byId("dissMode").value = "direct";
+    byId("sendConc").value = 1;
+    byId("fanoutK").value = 8;
+    byId("latPreset").value = "cloudping_p50";
+    applyLatencyPreset();
+    runAndRender();
+  });
+  byId("preset_bw1").addEventListener("click", ()=>{ byId("bandwidthPreset").value="custom"; byId("bandwidthGbps").value=1; runAndRender(); });
+  byId("preset_bw5").addEventListener("click", ()=>{ byId("bandwidthPreset").value="custom"; byId("bandwidthGbps").value=5; runAndRender(); });
+  byId("preset_bw10").addEventListener("click", ()=>{ byId("bandwidthPreset").value="custom"; byId("bandwidthGbps").value=10; runAndRender(); });
+  byId("preset_fullbody").addEventListener("click", ()=>{ byId("ppType").value="fullbody"; byId("bodyMB").value=2; runAndRender(); });
+  byId("preset_txhash").addEventListener("click", ()=>{ byId("ppType").value="txhashes"; runAndRender(); });
+  byId("preset_2x").addEventListener("click", ()=>{
+    byId("txCount").value = 20000;
+    byId("reusePct").value = 50;
+    runAndRender();
+  });
+  byId("resetHard").addEventListener("click", ()=> location.reload());
+
+  byId("latPreset").addEventListener("change", ()=>{ applyLatencyPreset(); schedule(); });
+  byId("bandwidthPreset").addEventListener("change", ()=>{ applyBandwidthPreset(); schedule(); });
+
+  byId("run").addEventListener("click", runAndRender);
+  byId("runSweep").addEventListener("click", ()=>{ showTab("sweep"); runSweep(); });
+  byId("syncCwFromGeo").addEventListener("click", syncCwFromGeo);
+
+  const ids = [
+    "N","Q","blockTime","rounds","txCount","txRef","execRefMs","insertExtraMs","alpha","reusePct","verifyMs",
+    "ppType","bodyMB","hitRate","missPenalty","streamStart","prepareOnHeader",
+    "bandwidthGbps","sendConc","dissMode","fanoutK",
+    "rttST","rttSS","rttTS","nSEO","nTYO","nSIN","propCity",
+    "queueMs","jitterStd","msgProc","pcOver","ppSer","iters","seed","zoom",
+    "prepareGate","commitGate",
+    // cw inputs
+    "cw_delta","cw_queue","cw_sigma","cw_model","cw_ppMbps","cw_mode"
+  ];
+  for(const id of ids){
+    const el = byId(id);
+    if(!el) continue;
+    el.addEventListener("input", schedule);
+    el.addEventListener("change", schedule);
+  }
+}
+
+bind();
+applyLatencyPreset();
+runAndRender();
+</script>
+</body>
+</html>
