@@ -1,0 +1,891 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Kaia IBFT Simulation — Speculative Execution & PP Lightweight</title>
+  <style>
+    :root{
+      --bg:#0b1220; --panel:#111a2e; --panel2:#0f1830;
+      --text:#e8eefc; --muted:#a8b3d6; --border:#2a355a; --accent:#9cc0ff;
+      --good:#e9ffe6; --warn:#ffe6e6;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:var(--text)}
+    header{padding:14px 18px;border-bottom:1px solid var(--border);position:sticky;top:0;background:rgba(11,18,32,.92);backdrop-filter:blur(6px);z-index:10}
+    header h1{margin:0 0 6px 0;font-size:16px;font-weight:850}
+    header .sub{font-size:12px;color:var(--muted);line-height:1.45;max-width:1200px}
+    main{padding:14px 18px 26px;display:grid;grid-template-columns: 520px 1fr;gap:14px}
+    .card{border:1px solid var(--border);background:var(--panel);border-radius:12px;padding:12px}
+    .card h2{margin:0 0 10px 0;font-size:13px}
+    .grid{display:grid;grid-template-columns: 1fr 1fr;gap:10px}
+    .field{display:flex;flex-direction:column;gap:6px}
+    label{font-size:12px;color:var(--muted)}
+    input, select{
+      background:var(--panel2); color:var(--text);
+      border:1px solid var(--border); border-radius:10px;
+      padding:8px 10px; font-size:12px; outline:none;
+    }
+    input:focus, select:focus{border-color:var(--accent)}
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    .pill{font-size:12px;border:1px solid var(--border);border-radius:999px;padding:6px 10px;background:var(--panel2);color:var(--muted)}
+    .pill b{color:var(--text)}
+    .btn{border:1px solid var(--border);background:var(--panel2);color:var(--text);padding:7px 10px;border-radius:10px;cursor:pointer;font-size:12px}
+    .btn:hover{filter:brightness(1.05)}
+    .viewport{border:1px solid var(--border);border-radius:12px;background:#fff;overflow:auto;height: calc(100vh - 182px);}
+    .svgwrap{transform-origin:0 0; display:inline-block}
+    .footer{margin-top:10px;color:var(--muted);font-size:12px;line-height:1.45}
+    .mono{font-family:ui-monospace,Menlo,Consolas,monospace}
+    .hr{height:1px;background:var(--border);margin:12px 0}
+    .tabs{display:flex;gap:8px;margin:0 0 10px 0;flex-wrap:wrap}
+    .tab{padding:7px 10px;border-radius:10px;border:1px solid var(--border);background:var(--panel2);cursor:pointer;font-size:12px;color:var(--muted)}
+    .tab.active{background:var(--accent);color:#0b1220;border-color:var(--accent);font-weight:800}
+    .smallnote{color:var(--muted);font-size:12px;line-height:1.35}
+    .checkrow{display:flex;gap:8px;align-items:center;margin-top:2px}
+    .checkrow input{width:auto}
+    canvas{display:block}
+    table{width:100%;border-collapse:collapse;font-size:12px}
+    th,td{padding:6px 8px;border-bottom:1px solid rgba(42,53,90,.55);text-align:left}
+    th{color:var(--muted);font-weight:700}
+    .ok{color:#0a7a1f}
+    .bad{color:#a31616}
+  </style>
+</head>
+<body>
+<header>
+  <h1>Kaia IBFT Simulation — exec(includes insert)=450ms, valset=50, quorum=17</h1>
+  <div class="sub">
+    This is an interactive <b>toy simulator</b> that compares: (1) <b>preprepare payload</b> (full body vs tx-hashes vs short-IDs vs header-only),
+    (2) <b>bandwidth</b> (1/5/10Gbps), (3) <b>Seoul/Tokyo/Singapore latency matrix</b>, and (4) <b>“partial pre-exec”</b> (work already done before block receipt).
+    Commit is assumed possible <b>immediately after execution</b> (prepare/commit votes are gated on local exec completion).
+  </div>
+</header>
+
+<main>
+  <div class="card">
+    <h2>Defaults (your spec) + knobs</h2>
+
+    <div class="grid">
+      <div class="field">
+        <label>Block time (ms)</label>
+        <input id="blockTime" type="number" value="1000" min="200" max="5000"/>
+      </div>
+      <div class="field">
+        <label>Exec time E (ms) (includes insert) — proposer & validators</label>
+        <input id="execMs" type="number" value="450" min="0" max="4000"/>
+      </div>
+      <div class="field">
+        <label>Extra insert (ms) (optional additive, default 0)</label>
+        <input id="insertExtraMs" type="number" value="0" min="0" max="4000"/>
+        <div class="smallnote">Use this to test “insert not included in exec” cases: total = E + extra.</div>
+      </div>
+
+      <div class="field">
+        <label>Valset size N</label>
+        <input id="N" type="number" value="50" min="4" max="200"/>
+      </div>
+      <div class="field">
+        <label>Quorum Q (votes needed, incl self)</label>
+        <input id="Q" type="number" value="17" min="2" max="200"/>
+      </div>
+
+      <div class="field">
+        <label>City split (Seoul / Tokyo / Singapore) — must sum to N</label>
+        <input id="citySplit" type="text" value="17,17,16"/>
+        <div class="smallnote">Format: <span class="mono">SEO,TYO,SIN</span>. Proposer is in Seoul by default.</div>
+      </div>
+      <div class="field">
+        <label>Bandwidth (Gbps)</label>
+        <select id="bw">
+          <option value="1" selected>1</option>
+          <option value="5">5</option>
+          <option value="10">10</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Preprepare type</label>
+        <select id="ppType">
+          <option value="fullbody">Full body (e.g., 2MB)</option>
+          <option value="txhashes" selected>Header + tx hashes (inventory)</option>
+          <option value="shortids">Header + short-IDs (compact)</option>
+          <option value="headeronly">Header only</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Full body size (MB) (used if fullbody)</label>
+        <input id="bodyMB" type="number" value="2" min="0.01" max="100" step="0.01"/>
+      </div>
+
+      <div class="field">
+        <label>Tx count (used for hash/shortID sizing)</label>
+        <input id="txCount" type="number" value="10000" min="1" max="500000"/>
+      </div>
+      <div class="field">
+        <label>PP serialization overhead (ms)</label>
+        <input id="ppSer" type="number" value="1" min="0" max="2000"/>
+      </div>
+
+      <div class="field">
+        <label>Send concurrency (leader) — connections/streams for proposal</label>
+        <input id="sendConc" type="number" value="1" min="1" max="32"/>
+        <div class="smallnote">If 1, leader sends sequentially → large tail. Increasing reduces tail/HOL.</div>
+      </div>
+      <div class="field">
+        <label>Propagation mode (for tail reduction)</label>
+        <select id="propMode">
+          <option value="fullmesh" selected>Full-mesh push</option>
+          <option value="fanout8">Tree fanout (k=8) approximation</option>
+          <option value="compact">Compact/header-first (minimal tail)</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label>Mempool hit-rate (%) (for non-fullbody)</label>
+        <input id="hitRate" type="number" value="98" min="0" max="100"/>
+      </div>
+      <div class="field">
+        <label>Miss penalty (ms) if tx/body not local</label>
+        <input id="missPenalty" type="number" value="80" min="0" max="3000"/>
+      </div>
+
+      <div class="field">
+        <label>Partial pre-exec fraction (0–80%)</label>
+        <input id="preExecFrac" type="number" value="15" min="0" max="80"/>
+        <div class="smallnote">Models “some work already done” before proposal arrives.</div>
+      </div>
+      <div class="field">
+        <label>Reconcile / re-exec overhead (ms)</label>
+        <input id="reconcileMs" type="number" value="20" min="0" max="2000"/>
+      </div>
+    </div>
+
+    <div class="hr"></div>
+
+    <h2>Latency model (Seoul ↔ Tokyo ↔ Singapore)</h2>
+    <div class="grid">
+      <div class="field">
+        <label>Preset</label>
+        <select id="latPreset">
+          <option value="cloudping" selected>AWS CloudPing (approx P50 RTT)</option>
+          <option value="custom">Custom RTT</option>
+        </select>
+        <div class="smallnote">
+          CloudPing defaults: SEO–TYO 34.89ms, SEO–SIN 69.33ms, TYO–SIN 69.93ms, intra 1.5ms.
+        </div>
+      </div>
+      <div class="field">
+        <label>Jitter σ (ms) (Gaussian, per hop)</label>
+        <input id="jitter" type="number" value="2.0" min="0" max="50" step="0.1"/>
+      </div>
+
+      <div class="field">
+        <label>Queue (ms) (added to one-way)</label>
+        <input id="queue" type="number" value="2.0" min="0" max="50" step="0.1"/>
+      </div>
+      <div class="field">
+        <label>Message processing (ms) (votes)</label>
+        <input id="msgProc" type="number" value="1.0" min="0" max="20" step="0.1"/>
+      </div>
+
+      <div class="field">
+        <label>Prepare processing (ms)</label>
+        <input id="prepProc" type="number" value="2.0" min="0" max="50" step="0.1"/>
+      </div>
+      <div class="field">
+        <label>Commit processing (ms)</label>
+        <input id="commitProc" type="number" value="2.0" min="0" max="50" step="0.1"/>
+      </div>
+
+      <div class="field">
+        <label>Custom RTT SEO–TYO (ms)</label>
+        <input id="rttST" type="number" value="34.89" min="0.1" max="500" step="0.01"/>
+      </div>
+      <div class="field">
+        <label>Custom RTT SEO–SIN (ms)</label>
+        <input id="rttSS" type="number" value="69.33" min="0.1" max="800" step="0.01"/>
+      </div>
+
+      <div class="field">
+        <label>Custom RTT TYO–SIN (ms)</label>
+        <input id="rttTS" type="number" value="69.93" min="0.1" max="800" step="0.01"/>
+      </div>
+      <div class="field">
+        <label>Intra-city RTT (ms)</label>
+        <input id="rttIntra" type="number" value="1.5" min="0.1" max="50" step="0.1"/>
+      </div>
+    </div>
+
+    <div class="hr"></div>
+
+    <div class="row">
+      <div class="field" style="flex:1;min-width:220px">
+        <label>Monte Carlo iterations</label>
+        <input id="iters" type="number" value="600" min="50" max="20000"/>
+      </div>
+      <div class="field" style="flex:1;min-width:220px">
+        <label>Seed</label>
+        <input id="seed" type="number" value="42" min="0" max="999999"/>
+      </div>
+      <div class="field" style="flex:1;min-width:220px">
+        <label>Zoom</label>
+        <select id="zoom">
+          <option value="0.75">75%</option>
+          <option value="1" selected>100%</option>
+          <option value="1.25">125%</option>
+          <option value="1.5">150%</option>
+          <option value="2">200%</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:10px">
+      <button class="btn" id="run">Run simulation</button>
+      <button class="btn" id="sweep">Run sweep (bw=1/5/10)</button>
+      <button class="btn" id="reset">Reset to your defaults</button>
+    </div>
+
+    <div class="footer" id="status"></div>
+  </div>
+
+  <div class="card" style="padding:10px">
+    <div class="tabs">
+      <div class="tab active" id="tabResults" onclick="showTab('results')">Results</div>
+      <div class="tab" id="tabTimeline" onclick="showTab('timeline')">Timeline</div>
+      <div class="tab" id="tabSweep" onclick="showTab('sweep')">Sweep table</div>
+    </div>
+
+    <div id="panelResults">
+      <div class="row" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">
+        <span class="pill">commit p50: <b id="commitP50">—</b></span>
+        <span class="pill">commit p95: <b id="commitP95">—</b></span>
+        <span class="pill">success(commit ≤ blockTime): <b id="succ">—</b></span>
+        <span class="pill">validator exec end p95: <b id="execP95">—</b></span>
+        <span class="pill">PP bytes: <b id="ppBytes">—</b></span>
+        <span class="pill">PP per-peer send: <b id="ppSend">—</b></span>
+        <span class="pill">send span (tail): <b id="span">—</b></span>
+      </div>
+      <div class="viewport" style="height: calc(100vh - 260px);">
+        <canvas id="hist" width="1100" height="520"></canvas>
+      </div>
+      <div class="footer">
+        Histogram shows proposer commit time. Red line = block time. If p95 crosses the red line, expect frequent round-changes.
+      </div>
+    </div>
+
+    <div id="panelTimeline" style="display:none">
+      <div class="viewport">
+        <div id="svgWrap" class="svgwrap"></div>
+      </div>
+      <div class="footer">
+        Timeline uses a representative run close to the median (not an average). Proposer: Exec → PP send. Validators: start(exec) p50/p95 and finish.
+      </div>
+    </div>
+
+    <div id="panelSweep" style="display:none">
+      <div class="viewport" style="height: calc(100vh - 210px);">
+        <div style="padding:10px;background:#fff;color:#111">
+          <table id="sweepTable">
+            <thead>
+              <tr>
+                <th>Bandwidth</th>
+                <th>PP type</th>
+                <th>commit p50</th>
+                <th>commit p95</th>
+                <th>success ≤ 1s</th>
+                <th>notes</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="footer">Sweep runs current settings across bandwidth=1/5/10 and PP types.</div>
+    </div>
+
+  </div>
+</main>
+
+<script>
+/*** UI helpers ***/
+function showTab(which){
+  document.getElementById("panelResults").style.display = (which==="results") ? "block" : "none";
+  document.getElementById("panelTimeline").style.display = (which==="timeline") ? "block" : "none";
+  document.getElementById("panelSweep").style.display = (which==="sweep") ? "block" : "none";
+  document.getElementById("tabResults").classList.toggle("active", which==="results");
+  document.getElementById("tabTimeline").classList.toggle("active", which==="timeline");
+  document.getElementById("tabSweep").classList.toggle("active", which==="sweep");
+}
+function $(id){ return document.getElementById(id); }
+function clamp(x,lo,hi){ return Math.max(lo, Math.min(hi, x)); }
+function num(id){ return parseFloat($(id).value); }
+function val(id){ return $(id).value; }
+function setStatus(msg){ $("status").innerHTML = msg; }
+
+/*** PRNG (mulberry32) for reproducible MC ***/
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function() {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  }
+}
+function randn(prng) {
+  // Box-Muller
+  let u = 0, v = 0;
+  while (u === 0) u = prng();
+  while (v === 0) v = prng();
+  return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+}
+
+/*** Latency matrix ***/
+const CITY = {SEO:0, TYO:1, SIN:2};
+function getRTT(){
+  // returns 3x3 RTT matrix (ms)
+  const preset = val("latPreset");
+  let st = num("rttST"), ss = num("rttSS"), ts = num("rttTS"), intra = num("rttIntra");
+
+  if(preset === "cloudping"){
+    st = 34.89; ss = 69.33; ts = 69.93; intra = 1.5;
+    $("rttST").value = st.toFixed(2);
+    $("rttSS").value = ss.toFixed(2);
+    $("rttTS").value = ts.toFixed(2);
+    $("rttIntra").value = intra.toFixed(1);
+  }
+  const rtt = [
+    [intra, st, ss],
+    [st, intra, ts],
+    [ss, ts, intra]
+  ];
+  return rtt;
+}
+function oneWayMs(i,j,rtt){
+  return (i===j) ? rtt[i][j]/2.0 : rtt[i][j]/2.0;
+}
+
+/*** Proposal payload sizing ***/
+function ppBytes(ppType, bodyMB, txCount){
+  const header = 1500;
+  if(ppType==="fullbody") return Math.round(bodyMB*1024*1024);
+  if(ppType==="txhashes") return header + Math.ceil(txCount*32*1.2);
+  if(ppType==="shortids") return header + Math.ceil(txCount*6*1.3);
+  if(ppType==="headeronly") return header;
+  return header;
+}
+function ppSendPerPeerMs(bytes, bwGbps, ppSerMs){
+  const bps = bwGbps * 1e9;
+  const ms = (bytes * 8.0 / bps) * 1000.0;
+  return ms + ppSerMs;
+}
+function effSpanMs(ppSend, N, sendConc, propMode){
+  // tail of send-start offsets due to limited concurrency
+  const groups = Math.ceil((N-1)/Math.max(1,sendConc));
+  let span = groups * ppSend;
+
+  // approximate fanout tail reduction
+  if(propMode==="fanout8") span = span/8.0;
+  if(propMode==="compact") span = Math.max(1.0, ppSend);
+  return span;
+}
+
+/*** One run simulation ***/
+function simulateOnce(params, prng){
+  const {
+    blockTime, execBase, insertExtraMs, N, Q, cityCounts, bwGbps, ppType, bodyMB, txCount, ppSer, sendConc, propMode,
+    hitRate, missPenalty, preExecFrac, reconcileMs,
+    rtt, jitter, queue, msgProc, prepProc, commitProc
+  } = params;
+
+  const cities = [];
+  for(let c=0;c<3;c++){
+    for(let i=0;i<cityCounts[c];i++) cities.push(c);
+  }
+  // proposer = first Seoul node (assume exists; if not, just first node)
+  let proposer = 0;
+  if(cities[0] !== CITY.SEO){
+    const j = cities.indexOf(CITY.SEO);
+    if(j>=0){
+      const tmp = cities[0]; cities[0]=cities[j]; cities[j]=tmp;
+    }
+  }
+  proposer = 0;
+
+  // proposer exec end
+  const execEnd = new Array(N).fill(0);
+  const execStart = new Array(N).fill(0);
+  execStart[proposer] = 0;
+  const totalExec = execBase + insertExtraMs;
+  execEnd[proposer] = totalExec;
+
+  // proposal send
+  const bytes = ppBytes(ppType, bodyMB, txCount);
+  const ppSend = ppSendPerPeerMs(bytes, bwGbps, ppSer);
+  const span = effSpanMs(ppSend, N, sendConc, propMode);
+
+  // schedule send-start offsets for recipients (simple lane scheduling)
+  const recips = [];
+  for(let i=1;i<N;i++) recips.push(i);
+  // shuffle recipients
+  for(let i=recips.length-1;i>0;i--){
+    const j = Math.floor(prng()*(i+1));
+    const tmp=recips[i]; recips[i]=recips[j]; recips[j]=tmp;
+  }
+  const laneAvail = new Array(Math.max(1,sendConc)).fill(execEnd[proposer]);
+  const sendStart = new Array(N).fill(execEnd[proposer]); // absolute time each recipient starts being sent to
+  for(const idx of recips){
+    let bestLane=0;
+    for(let l=1;l<laneAvail.length;l++) if(laneAvail[l]<laneAvail[bestLane]) bestLane=l;
+    sendStart[idx] = laneAvail[bestLane];
+    laneAvail[bestLane] += ppSend;
+  }
+
+  const firstArr = new Array(N).fill(execEnd[proposer]);
+  const fullArr  = new Array(N).fill(execEnd[proposer]);
+
+  for(let i=1;i<N;i++){
+    const ow = oneWayMs(cities[proposer], cities[i], rtt) + queue + jitter*randn(prng);
+    const d = Math.max(0.1, ow);
+    firstArr[i] = sendStart[i] + d;
+    fullArr[i]  = sendStart[i] + ppSend + d;
+  }
+
+  // when can validators start executing?
+  // - fullbody: streaming start at firstArr
+  // - txhashes/shortids: need full payload to know ordering => fullArr
+  // - headeronly: need fetch of tx list/body => fullArr + missPenalty (worst-case)
+  for(let i=1;i<N;i++){
+    if(ppType==="fullbody"){
+      execStart[i] = firstArr[i];
+    } else if(ppType==="headeronly"){
+      execStart[i] = fullArr[i] + missPenalty; // must fetch body list
+    } else {
+      execStart[i] = fullArr[i]; // have inventory list
+    }
+  }
+
+  // effective validator exec time (partial pre-exec)
+  const preF = clamp(preExecFrac,0,0.8);
+  const effExec = execBase*(1.0-preF) + reconcileMs + insertExtraMs;
+
+  // body miss penalty for txhashes/shortids (if tx not local)
+  const hit = clamp(hitRate/100.0, 0, 1);
+  const bodyPenalty = (ppType==="fullbody" || ppType==="headeronly") ? 0 : (1-hit)*missPenalty;
+
+  for(let i=1;i<N;i++){
+    execEnd[i] = execStart[i] + effExec + bodyPenalty;
+  }
+
+  // vote message delays (small msgs): delay[i][j] = oneWay + queue + jitter + msgProc
+  const delay = Array.from({length:N}, ()=> new Array(N).fill(0));
+  for(let i=0;i<N;i++){
+    for(let j=0;j<N;j++){
+      if(i===j) continue;
+      const ow = oneWayMs(cities[i], cities[j], rtt) + queue + jitter*randn(prng);
+      delay[i][j] = Math.max(0.1, ow) + msgProc;
+    }
+  }
+
+  // prepare send after exec (per your "commit right after exec")
+  const prepareSend = new Array(N);
+  for(let i=0;i<N;i++) prepareSend[i] = execEnd[i] + prepProc;
+
+  const need = Math.max(0, Q-1); // from others
+  // prepare ready at each node
+  const prepareReady = new Array(N).fill(0);
+  for(let j=0;j<N;j++){
+    const arr = [];
+    for(let i=0;i<N;i++){
+      if(i===j) continue;
+      arr.push(prepareSend[i] + delay[i][j]);
+    }
+    arr.sort((a,b)=>a-b);
+    const kth = (need===0) ? 0 : arr[Math.min(need-1, arr.length-1)];
+    prepareReady[j] = Math.max(prepareSend[j], kth);
+  }
+
+  // commit send: after prepare ready AND after execEnd (exec already done; keep max for clarity)
+  const commitSend = new Array(N);
+  for(let i=0;i<N;i++) commitSend[i] = Math.max(execEnd[i], prepareReady[i]) + commitProc;
+
+  // commit ready at proposer (quorum)
+  const carr = [];
+  for(let i=0;i<N;i++){
+    if(i===proposer) continue;
+    carr.push(commitSend[i] + delay[i][proposer]);
+  }
+  carr.sort((a,b)=>a-b);
+  const ckth = (need===0) ? 0 : carr[Math.min(need-1, carr.length-1)];
+  const commitReadyProposer = Math.max(commitSend[proposer], ckth);
+
+  // p95 exec end
+  const sortedExecEnd = execEnd.slice().sort((a,b)=>a-b);
+  const execP95 = sortedExecEnd[Math.floor(0.95*(N-1))];
+
+  return {
+    commit: commitReadyProposer,
+    execP95,
+    bytes,
+    ppSend,
+    span,
+    sample: {
+      proposerExecEnd: execEnd[proposer],
+      proposerSendStart: execEnd[proposer],
+      proposerSendEnd: execEnd[proposer] + ppSend, // per-peer duration
+      // p50/p95 validator start/finish (approx by distribution of execStart/execEnd)
+      vStartP50: execStart.slice().sort((a,b)=>a-b)[Math.floor(0.50*(N-1))],
+      vStartP95: execStart.slice().sort((a,b)=>a-b)[Math.floor(0.95*(N-1))],
+      vEndP50: execEnd.slice().sort((a,b)=>a-b)[Math.floor(0.50*(N-1))],
+      vEndP95: execEnd.slice().sort((a,b)=>a-b)[Math.floor(0.95*(N-1))],
+      consEnd: commitReadyProposer
+    }
+  };
+}
+
+/*** Monte Carlo runner ***/
+function buildParams(){
+  const blockTime = num("blockTime");
+  const execBase = num("execMs");
+  const insertExtraMs = num("insertExtraMs");
+  const N = Math.round(num("N"));
+  const Q = Math.round(num("Q"));
+  const bwGbps = parseFloat(val("bw"));
+  const ppType = val("ppType");
+  const bodyMB = num("bodyMB");
+  const txCount = Math.round(num("txCount"));
+  const ppSer = num("ppSer");
+  const sendConc = Math.round(num("sendConc"));
+  const propMode = val("propMode");
+  const hitRate = num("hitRate");
+  const missPenalty = num("missPenalty");
+  const preExecFrac = num("preExecFrac")/100.0;
+  const reconcileMs = num("reconcileMs");
+  const rtt = getRTT();
+  const jitter = num("jitter");
+  const queue = num("queue");
+  const msgProc = num("msgProc");
+  const prepProc = num("prepProc");
+  const commitProc = num("commitProc");
+  const split = val("citySplit").split(",").map(x=>parseInt(x.trim(),10));
+  let cityCounts=[0,0,0];
+  if(split.length===3 && split.every(x=>Number.isFinite(x))) cityCounts=split;
+  const sum = cityCounts.reduce((a,b)=>a+b,0);
+  return {blockTime, execBase, insertExtraMs, N, Q, cityCounts, sum, bwGbps, ppType, bodyMB, txCount, ppSer, sendConc, propMode, hitRate, missPenalty, preExecFrac, reconcileMs, rtt, jitter, queue, msgProc, prepProc, commitProc};
+}
+
+function runMC(iters, seed, overrideParams=null){
+  const p = overrideParams || buildParams();
+  const errs=[];
+  if(p.sum !== p.N) errs.push(`City split must sum to N (got ${p.sum} vs N=${p.N}).`);
+  if(p.Q > p.N) errs.push(`Quorum Q must be ≤ N.`);
+  if(p.Q < 1) errs.push(`Quorum Q must be ≥ 1.`);
+  if(p.N < 2) errs.push(`N must be ≥ 2.`);
+  if(errs.length){
+    setStatus(`<span style="color:#ffd1d1">Error: ${errs.join(" ")}</span>`);
+    return null;
+  }
+
+  const prng = mulberry32(seed>>>0);
+  const commits=[];
+  const execP95s=[];
+  let sample=null;
+  for(let i=0;i<iters;i++){
+    const r = simulateOnce(p, prng);
+    commits.push(r.commit);
+    execP95s.push(r.execP95);
+    if(i===Math.floor(iters/2)) sample = r.sample;
+  }
+  commits.sort((a,b)=>a-b);
+  execP95s.sort((a,b)=>a-b);
+
+  const p50 = commits[Math.floor(0.50*(iters-1))];
+  const p95 = commits[Math.floor(0.95*(iters-1))];
+  const succ = commits.filter(x=>x<=p.blockTime).length / iters;
+  const execP95 = execP95s[Math.floor(0.50*(iters-1))]; // median of p95 across runs
+
+  const bytes = ppBytes(p.ppType, p.bodyMB, p.txCount);
+  const ppSend = ppSendPerPeerMs(bytes, p.bwGbps, p.ppSer);
+  const span = effSpanMs(ppSend, p.N, p.sendConc, p.propMode);
+
+  return {p50, p95, succ, execP95, commits, bytes, ppSend, span, sample, params:p};
+}
+
+/*** Rendering ***/
+function fmtMs(x){ return `${x.toFixed(1)}ms`; }
+function fmtPct(x){ return `${(x*100).toFixed(1)}%`; }
+function drawHist(commits, blockTime){
+  const canvas = $("hist");
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width, H = canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  // background
+  ctx.fillStyle="#ffffff"; ctx.fillRect(0,0,W,H);
+
+  const padL=60, padR=20, padT=20, padB=45;
+  const plotW=W-padL-padR, plotH=H-padT-padB;
+
+  const min = Math.min(...commits);
+  const max = Math.max(...commits);
+  const xMin = Math.max(0, min - 20);
+  const xMax = Math.max(blockTime*1.15, max + 20);
+
+  const bins=30;
+  const counts=new Array(bins).fill(0);
+  for(const v of commits){
+    const t = (v-xMin)/(xMax-xMin);
+    const b = clamp(Math.floor(t*bins), 0, bins-1);
+    counts[b]++;
+  }
+  const maxC = Math.max(...counts);
+
+  // axes
+  ctx.strokeStyle="#111"; ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(padL, padT);
+  ctx.lineTo(padL, padT+plotH);
+  ctx.lineTo(padL+plotW, padT+plotH);
+  ctx.stroke();
+
+  // bars
+  for(let i=0;i<bins;i++){
+    const bx = padL + (i/bins)*plotW;
+    const bw = (plotW/bins)*0.9;
+    const bh = (counts[i]/maxC)*plotH;
+    ctx.fillStyle="#cfd8ff";
+    ctx.fillRect(bx, padT+plotH-bh, bw, bh);
+  }
+
+  // blockTime red line
+  const xBT = padL + ((blockTime-xMin)/(xMax-xMin))*plotW;
+  ctx.strokeStyle="#c00"; ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(xBT, padT);
+  ctx.lineTo(xBT, padT+plotH);
+  ctx.stroke();
+
+  // labels
+  ctx.fillStyle="#111"; ctx.font="12px ui-monospace, Menlo, Consolas, monospace";
+  ctx.fillText("count", 10, padT+10);
+  ctx.fillText("commit time (ms)", padL + plotW/2 - 55, H-12);
+
+  // x ticks
+  const ticks=5;
+  for(let i=0;i<=ticks;i++){
+    const v = xMin + (i/ticks)*(xMax-xMin);
+    const xt = padL + (i/ticks)*plotW;
+    ctx.fillStyle="#111";
+    ctx.fillRect(xt, padT+plotH, 1, 6);
+    ctx.fillText(v.toFixed(0), xt-12, padT+plotH+20);
+  }
+  ctx.fillStyle="#c00";
+  ctx.fillText(`blockTime=${blockTime.toFixed(0)}ms`, xBT+6, padT+14);
+}
+
+function renderTimeline(sample, params){
+  const zoom = parseFloat(val("zoom"));
+  const rounds = 5;
+  const blockTime = params.blockTime;
+  const timeMax = rounds*blockTime;
+
+  const width=1700, left=240, right=30, top=80;
+  const plotW=width-left-right;
+  const scale=plotW/timeMax;
+
+  const laneH=40, gap=8;
+  const lanesPerRound=3;
+  const height=70 + rounds*lanesPerRound*(laneH+gap) + 90;
+
+  function x(ms){ return left + ms*scale; }
+
+  const style = `
+    .t{font-family:ui-monospace,Menlo,Consolas,monospace;fill:#111}
+    .title{font-size:16px;font-weight:700}
+    .lbl{font-size:12px;font-weight:700}
+    .small{font-size:11px}
+    .axis{stroke:#111;stroke-width:2}
+    .grid{stroke:#d0d0d0;stroke-width:1}
+    .lane{fill:#fff;stroke:#111;stroke-width:1}
+    .barExec{fill:#e6f2ff;stroke:#111;stroke-width:1}
+    .barSend{fill:#fff3e6;stroke:#111;stroke-width:1}
+    .barVal{fill:#f5f5f5;stroke:#111;stroke-width:1}
+    .barVal95{fill:none;stroke:#111;stroke-width:2;stroke-dasharray:6 4}
+    .marker{stroke:#111;stroke-width:1.5;stroke-dasharray:6 4}
+  `;
+
+  let s='';
+  s += `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
+  s += `<defs><style>${style}</style></defs>`;
+  s += `<rect width="100%" height="100%" fill="#fff"/>`;
+  s += `<text class="t title" x="20" y="28">Representative 5-round timeline (median-ish run)</text>`;
+  s += `<text class="t small" x="20" y="48">E=${params.execBase}ms (+insertExtra ${params.insertExtraMs||0}ms), N=${params.N}, Q=${params.Q}, pp=${params.ppType}, bw=${params.bwGbps}Gbps</text>`;
+
+  s += `<line class="axis" x1="${left}" y1="${top}" x2="${width-right}" y2="${top}"/>`;
+
+  // ticks
+  const tickStep=500;
+  for(let t=0;t<=timeMax;t+=tickStep){
+    const xt=x(t);
+    s += `<line class="grid" x1="${xt.toFixed(1)}" y1="${top+10}" x2="${xt.toFixed(1)}" y2="${height-40}"/>`;
+    s += `<text class="t small" x="${(xt-12).toFixed(1)}" y="${top-10}">${t}</text>`;
+  }
+  // round markers
+  for(let r=1;r<=rounds;r++){
+    const ms=r*blockTime;
+    const xm=x(ms);
+    s += `<line class="marker" x1="${xm.toFixed(1)}" y1="${top+10}" x2="${xm.toFixed(1)}" y2="${height-40}"/>`;
+    s += `<text class="t small" x="${(xm-38).toFixed(1)}" y="${top+26}">${ms}ms</text>`;
+  }
+
+  const y0=top+55;
+  for(let r=1;r<=rounds;r++){
+    const rs=(r-1)*blockTime;
+    const yProp=y0+(r-1)*lanesPerRound*(laneH+gap);
+    const yVal=yProp+(laneH+gap);
+    const yCom=yProp+2*(laneH+gap);
+
+    // lanes
+    s += `<rect class="lane" x="20" y="${yProp}" width="${width-40}" height="${laneH}"/>`;
+    s += `<text class="t lbl" x="30" y="${yProp+26}">Proposer (round ${r})</text>`;
+
+    s += `<rect class="lane" x="20" y="${yVal}" width="${width-40}" height="${laneH}"/>`;
+    s += `<text class="t lbl" x="30" y="${yVal+26}">Validators exec (p50 solid / p95 dashed)</text>`;
+
+    s += `<rect class="lane" x="20" y="${yCom}" width="${width-40}" height="${laneH}"/>`;
+    s += `<text class="t lbl" x="30" y="${yCom+26}">Commit ready @ proposer (marker)</text>`;
+
+    // Use same sample pattern shifted by round start
+    const propExecStart=rs;
+    const propExecEnd=rs+sample.proposerExecEnd;
+    const sendStart=rs+sample.proposerSendStart;
+    const sendEnd=rs+sample.proposerSendStart + (params.ppSend||0);
+
+    const vS50=rs+sample.vStartP50;
+    const vS95=rs+sample.vStartP95;
+    const vE50=rs+sample.vEndP50;
+    const vE95=rs+sample.vEndP95;
+
+    const cEnd=rs+sample.consEnd;
+
+    // proposer bars
+    s += `<rect class="barExec" x="${x(propExecStart).toFixed(1)}" y="${yProp+6}" width="${((propExecEnd-propExecStart)*scale).toFixed(1)}" height="${laneH-12}"/>`;
+    s += `<rect class="barSend" x="${x(sendStart).toFixed(1)}" y="${yProp+6}" width="${((sendEnd-sendStart)*scale).toFixed(1)}" height="${laneH-12}"/>`;
+    s += `<text class="t small" x="${(x(propExecStart)+6).toFixed(1)}" y="${yProp+24}">Exec ${propExecStart.toFixed(0)}-${propExecEnd.toFixed(0)}</text>`;
+    s += `<text class="t small" x="${(x(sendStart)+6).toFixed(1)}" y="${yProp+38}">PP send starts ${sendStart.toFixed(0)}</text>`;
+
+    // validator bars
+    s += `<rect class="barVal" x="${x(vS50).toFixed(1)}" y="${yVal+6}" width="${((vE50-vS50)*scale).toFixed(1)}" height="${laneH-12}"/>`;
+    s += `<rect class="barVal95" x="${x(vS95).toFixed(1)}" y="${yVal+6}" width="${((vE95-vS95)*scale).toFixed(1)}" height="${laneH-12}"/>`;
+    s += `<text class="t small" x="${(x(vS50)+6).toFixed(1)}" y="${yVal+24}">p50 ${vS50.toFixed(0)}-${vE50.toFixed(0)}</text>`;
+    s += `<text class="t small" x="${(x(vS95)+6).toFixed(1)}" y="${yVal+38}">p95 ${vS95.toFixed(0)}-${vE95.toFixed(0)}</text>`;
+
+    // commit marker
+    const cmx=x(cEnd);
+    s += `<line class="axis" x1="${cmx.toFixed(1)}" y1="${yCom+6}" x2="${cmx.toFixed(1)}" y2="${yCom+laneH-6}"/>`;
+    s += `<text class="t small" x="${(cmx+6).toFixed(1)}" y="${yCom+24}">commit ${cEnd.toFixed(0)}ms</text>`;
+  }
+
+  s += `</svg>`;
+  $("svgWrap").innerHTML = s;
+  $("svgWrap").style.transform = "scale(" + zoom + ")";
+}
+
+function setOutputs(r){
+  $("commitP50").textContent = fmtMs(r.p50);
+  $("commitP95").textContent = fmtMs(r.p95);
+  $("succ").textContent = fmtPct(r.succ);
+  $("execP95").textContent = fmtMs(r.execP95);
+  $("ppBytes").textContent = `${(r.bytes/1024).toFixed(1)}KB`;
+  $("ppSend").textContent = fmtMs(r.ppSend);
+  $("span").textContent = fmtMs(r.span);
+}
+
+/*** Actions ***/
+function resetDefaults(){
+  $("blockTime").value = 1000;
+  $("execMs").value = 450;
+  $("insertExtraMs").value = 0;
+  $("N").value = 50;
+  $("Q").value = 17;
+  $("citySplit").value = "17,17,16";
+  $("bw").value = "1";
+  $("ppType").value = "txhashes";
+  $("bodyMB").value = 2;
+  $("txCount").value = 10000;
+  $("ppSer").value = 1;
+  $("sendConc").value = 1;
+  $("propMode").value = "fullmesh";
+  $("hitRate").value = 98;
+  $("missPenalty").value = 80;
+  $("preExecFrac").value = 15;
+  $("reconcileMs").value = 20;
+  $("latPreset").value = "cloudping";
+  $("jitter").value = 2.0;
+  $("queue").value = 2.0;
+  $("msgProc").value = 1.0;
+  $("prepProc").value = 2.0;
+  $("commitProc").value = 2.0;
+  $("iters").value = 600;
+  $("seed").value = 42;
+  $("zoom").value = "1";
+  getRTT();
+  setStatus("Reset to your requested defaults.");
+}
+
+function run(){
+  const iters = Math.round(num("iters"));
+  const seed = Math.round(num("seed"));
+  const r = runMC(iters, seed);
+  if(!r) return;
+  setOutputs(r);
+  drawHist(r.commits, r.params.blockTime);
+  renderTimeline(r.sample, { ...r.params, ppSend: r.ppSend });
+  const ok = (r.p95 <= r.params.blockTime);
+  setStatus(`<b>Interpretation</b>: commit_p95 ${fmtMs(r.p95)} vs blockTime ${fmtMs(r.params.blockTime)} → ` +
+            (ok ? `<span class="ok"><b>likely stable</b></span>` : `<span class="bad"><b>round-change risk</b></span>`) +
+            `. (validator exec p95 ~ ${fmtMs(r.execP95)}; pre-exec fraction reduces post-receipt exec.)`);
+}
+
+function sweep(){
+  const iters = Math.max(200, Math.round(num("iters")/2));
+  const seed = Math.round(num("seed"));
+  const base = buildParams();
+  const bws=[1,5,10];
+  const ppTypes=["fullbody","txhashes","shortids","headeronly"];
+  const tbody = $("sweepTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  showTab("sweep");
+
+  for(const bw of bws){
+    for(const pt of ppTypes){
+      const p = {...base, bwGbps:bw, ppType:pt};
+      // run with deterministic seed offset
+      const r = runMC(iters, seed + bw*100 + pt.length, p);
+      if(!r) continue;
+      const tr = document.createElement("tr");
+      const notes = (pt==="fullbody" && bw===1) ? "Leader egress likely bottleneck (full-mesh push)" : "";
+      tr.innerHTML = `
+        <td>${bw}Gbps</td>
+        <td class="mono">${pt}</td>
+        <td>${fmtMs(r.p50)}</td>
+        <td>${fmtMs(r.p95)}</td>
+        <td>${fmtPct(r.succ)}</td>
+        <td>${notes}</td>
+      `;
+      tbody.appendChild(tr);
+    }
+  }
+}
+
+/*** Bind ***/
+$("run").addEventListener("click", ()=>{ showTab("results"); run(); });
+$("sweep").addEventListener("click", sweep);
+$("reset").addEventListener("click", ()=>{ resetDefaults(); run(); });
+
+// run once on load
+resetDefaults();
+run();
+</script>
+</body>
+</html>
